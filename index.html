@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#174c3c">
+  <meta name="description" content="三角形・台形の面積を現場で計算・記録できるオフライン対応PWA">
+  <title>現場面積ノート</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">FIELD AREA NOTE</p>
+      <h1>現場面積ノート</h1>
+    </div>
+    <button id="installButton" class="icon-button hidden" type="button">アプリを追加</button>
+  </header>
+
+  <main>
+    <nav class="tabs" aria-label="画面切替">
+      <button class="tab active" data-view="calculator" type="button">計算</button>
+      <button class="tab" data-view="history" type="button">履歴 <span id="historyCount" class="count">0</span></button>
+    </nav>
+
+    <section id="calculatorView" class="view active">
+      <form id="areaForm" novalidate>
+        <input id="recordId" type="hidden">
+        <section class="card form-card">
+          <div class="mode-switch" role="radiogroup" aria-label="図形の種類">
+            <button class="mode active" data-mode="triangle" role="radio" aria-checked="true" type="button">
+              <span class="shape-mark">△</span>三角形
+            </button>
+            <button class="mode" data-mode="trapezoid" role="radio" aria-checked="false" type="button">
+              <span class="shape-mark">▱</span>台形
+            </button>
+          </div>
+
+          <div class="field-grid meta-grid">
+            <label class="field">
+              <span>名称・測点名 <em>必須</em></span>
+              <input id="name" type="text" maxlength="60" placeholder="例：測点 A-12" autocomplete="off" required>
+            </label>
+            <label class="field">
+              <span>日付</span>
+              <input id="date" type="date" required>
+            </label>
+          </div>
+
+          <div id="triangleFields" class="dimensions">
+            <p class="section-label">3辺の長さ</p>
+            <div class="field-grid three-columns">
+              <label class="field"><span>辺 a</span><div class="with-unit"><input id="sideA" inputmode="decimal" type="number" min="0" step="any" placeholder="0.00"><b>m</b></div></label>
+              <label class="field"><span>辺 b</span><div class="with-unit"><input id="sideB" inputmode="decimal" type="number" min="0" step="any" placeholder="0.00"><b>m</b></div></label>
+              <label class="field"><span>辺 c</span><div class="with-unit"><input id="sideC" inputmode="decimal" type="number" min="0" step="any" placeholder="0.00"><b>m</b></div></label>
+            </div>
+          </div>
+
+          <div id="trapezoidFields" class="dimensions hidden">
+            <p class="section-label">底辺と高さ</p>
+            <div class="field-grid three-columns">
+              <label class="field"><span>上底</span><div class="with-unit"><input id="topBase" inputmode="decimal" type="number" min="0" step="any" placeholder="0.00"><b>m</b></div></label>
+              <label class="field"><span>下底</span><div class="with-unit"><input id="bottomBase" inputmode="decimal" type="number" min="0" step="any" placeholder="0.00"><b>m</b></div></label>
+              <label class="field"><span>高さ</span><div class="with-unit"><input id="height" inputmode="decimal" type="number" min="0" step="any" placeholder="0.00"><b>m</b></div></label>
+            </div>
+          </div>
+
+          <div id="message" class="message" role="alert" aria-live="polite"></div>
+
+          <div class="preview-result">
+            <div class="preview-wrap">
+              <svg id="shapePreview" viewBox="0 0 320 190" role="img" aria-label="入力寸法の簡易図形"></svg>
+              <small>形状イメージ（縮尺は参考）</small>
+            </div>
+            <div class="result-panel">
+              <span>計算面積</span>
+              <strong id="areaResult">—</strong>
+              <small>m²</small>
+            </div>
+          </div>
+
+          <label class="field memo-field">
+            <span>メモ</span>
+            <textarea id="memo" rows="3" maxlength="500" placeholder="現場状況、写真番号、補足など"></textarea>
+          </label>
+        </section>
+
+        <div class="sticky-actions">
+          <button id="clearButton" class="secondary-button" type="button">クリア</button>
+          <button id="saveButton" class="primary-button" type="submit">計算して保存</button>
+        </div>
+      </form>
+    </section>
+
+    <section id="historyView" class="view" aria-labelledby="historyHeading">
+      <div class="history-heading">
+        <div><p class="eyebrow">SAVED RECORDS</p><h2 id="historyHeading">保存履歴</h2></div>
+        <button id="selectAllButton" class="text-button" type="button">すべて選択</button>
+      </div>
+
+      <section id="totalBar" class="total-bar">
+        <div><span>選択中 <b id="selectedCount">0</b>件</span><strong><span id="selectedTotal">0.000</span> m²</strong></div>
+        <button id="clearSelectionButton" type="button">選択解除</button>
+      </section>
+
+      <div id="historyList" class="history-list"></div>
+      <div id="emptyState" class="empty-state">
+        <span>△</span><h3>まだ記録がありません</h3><p>「計算」画面で寸法を入力して保存すると、ここに記録されます。</p>
+      </div>
+
+      <details class="backup-card">
+        <summary>データ出力・バックアップ</summary>
+        <p>CSVは表計算用、JSONはこのアプリへの復元用です。</p>
+        <div class="backup-actions">
+          <button id="exportCsvButton" type="button">CSV出力</button>
+          <button id="exportJsonButton" type="button">JSON保存</button>
+          <label class="file-button">JSONから復元<input id="importJsonInput" type="file" accept="application/json,.json"></label>
+        </div>
+      </details>
+    </section>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <dialog id="deleteDialog">
+    <h2>記録を削除しますか？</h2>
+    <p>削除した記録は元に戻せません。</p>
+    <div class="dialog-actions">
+      <button id="cancelDeleteButton" class="secondary-button" type="button">キャンセル</button>
+      <button id="confirmDeleteButton" class="danger-button" type="button">削除</button>
+    </div>
+  </dialog>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

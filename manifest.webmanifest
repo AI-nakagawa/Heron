@@ -1,0 +1,15 @@
+{
+  "name": "現場面積ノート",
+  "short_name": "面積ノート",
+  "description": "三角形・台形の面積を現場で計算・記録",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f3f0e7",
+  "theme_color": "#174c3c",
+  "lang": "ja",
+  "orientation": "portrait-primary",
+  "icons": [
+    {"src":"icons/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}
