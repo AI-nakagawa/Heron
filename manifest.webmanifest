@@ -1,7 +1,7 @@
 {
   "name": "現場面積ノート",
   "short_name": "面積ノート",
-  "description": "三角形・台形の面積を現場で計算・記録",
+  "description": "三角形・台形を辺でつないで面積計算・図面保存",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

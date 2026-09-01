@@ -1,101 +1,44 @@
 "use strict";
-
-const STORAGE_KEY = "field-area-records-v1";
-const $ = (id) => document.getElementById(id);
-const state = { mode: "triangle", records: loadRecords(), selected: new Set(), deleteId: null, deferredInstall: null };
-const dimensionIds = ["sideA", "sideB", "sideC", "topBase", "bottomBase", "height"];
-
-function loadRecords() {
-  try { const value = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); return Array.isArray(value) ? value : []; }
-  catch { return []; }
-}
-function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.records)); }
-function number(id) { return Number($(id).value); }
-function validPositive(values) { return values.every((v) => Number.isFinite(v) && v > 0); }
-function today() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
-function formatArea(value) { return Number(value).toLocaleString("ja-JP", { minimumFractionDigits: 3, maximumFractionDigits: 3 }); }
-function escapeHtml(value) { return String(value).replace(/[&<>'"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c])); }
-
-function calculate(showMessage = true) {
-  let area = null, error = "";
-  if (state.mode === "triangle") {
-    const [a,b,c] = [number("sideA"),number("sideB"),number("sideC")];
-    if (!validPositive([a,b,c])) error = "3辺すべてに0より大きい数値を入力してください。";
-    else if (a + b <= c || a + c <= b || b + c <= a) error = "この3辺では三角形が成立しません。最長辺は、残り2辺の合計より短くしてください。";
-    else { const s = (a+b+c)/2; area = Math.sqrt(s*(s-a)*(s-b)*(s-c)); }
-  } else {
-    const [top,bottom,h] = [number("topBase"),number("bottomBase"),number("height")];
-    if (!validPositive([top,bottom,h])) error = "上底・下底・高さに0より大きい数値を入力してください。";
-    else area = (top+bottom)*h/2;
-  }
-  $("areaResult").textContent = area === null ? "—" : formatArea(area);
-  if (showMessage) $("message").textContent = error;
-  drawPreview();
-  return { area, error };
-}
-
-function drawPreview() {
-  const svg = $("shapePreview");
-  const line = "#174c3c", fill = "#dce879", text = "#425b52";
-  if (state.mode === "triangle") {
-    const [a,b,c] = [number("sideA"),number("sideB"),number("sideC")];
-    let p1=[42,152],p2=[278,152],p3=[160,36];
-    if (validPositive([a,b,c]) && a+b>c && a+c>b && b+c>a) {
-      const base=c, x=(b*b+base*base-a*a)/(2*base), y=Math.sqrt(Math.max(0,b*b-x*x));
-      const scale=Math.min(230/base,112/Math.max(y,.01)); p2=[42+base*scale,152]; p3=[42+x*scale,152-y*scale];
-      const shift=(320-(p2[0]-p1[0]))/2-p1[0]; p1[0]+=shift;p2[0]+=shift;p3[0]+=shift;
-    }
-    svg.innerHTML=`<polygon points="${p1} ${p2} ${p3}" fill="${fill}" fill-opacity=".72" stroke="${line}" stroke-width="4" stroke-linejoin="round"/><text x="${(p2[0]+p3[0])/2+8}" y="${(p2[1]+p3[1])/2}" fill="${text}" font-size="14" font-weight="700">a</text><text x="${(p1[0]+p3[0])/2-18}" y="${(p1[1]+p3[1])/2}" fill="${text}" font-size="14" font-weight="700">b</text><text x="${(p1[0]+p2[0])/2}" y="174" text-anchor="middle" fill="${text}" font-size="14" font-weight="700">c</text>`;
-  } else {
-    const top=number("topBase"),bottom=number("bottomBase"),h=number("height"); let topW=125,bottomW=235;
-    if(validPositive([top,bottom,h])){const max=Math.max(top,bottom);topW=220*top/max;bottomW=220*bottom/max;}
-    const x1=(320-bottomW)/2,x2=(320+bottomW)/2,t1=(320-topW)/2,t2=(320+topW)/2;
-    svg.innerHTML=`<polygon points="${x1},152 ${x2},152 ${t2},42 ${t1},42" fill="${fill}" fill-opacity=".72" stroke="${line}" stroke-width="4" stroke-linejoin="round"/><line x1="160" y1="42" x2="160" y2="152" stroke="${line}" stroke-width="2" stroke-dasharray="6 5"/><text x="160" y="30" text-anchor="middle" fill="${text}" font-size="14" font-weight="700">上底</text><text x="160" y="175" text-anchor="middle" fill="${text}" font-size="14" font-weight="700">下底</text><text x="170" y="102" fill="${text}" font-size="14" font-weight="700">高さ</text>`;
-  }
-}
-
-function setMode(mode) {
-  state.mode = mode;
-  document.querySelectorAll(".mode").forEach((button) => { const active=button.dataset.mode===mode;button.classList.toggle("active",active);button.setAttribute("aria-checked",String(active)); });
-  $("triangleFields").classList.toggle("hidden",mode!=="triangle"); $("trapezoidFields").classList.toggle("hidden",mode!=="trapezoid");
-  $("message").textContent=""; calculate(false);
-}
-function dimensionsForMode() { return state.mode === "triangle" ? {a:number("sideA"),b:number("sideB"),c:number("sideC")} : {top:number("topBase"),bottom:number("bottomBase"),height:number("height")}; }
-function resetForm() { $("areaForm").reset(); $("recordId").value=""; $("date").value=today(); setMode("triangle"); $("saveButton").textContent="計算して保存"; dimensionIds.forEach(id=>$(id).value=""); calculate(false); }
-function showToast(text) { const el=$("toast");el.textContent=text;el.classList.add("show");clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>el.classList.remove("show"),2200); }
-function switchView(view) { document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===view)); $("calculatorView").classList.toggle("active",view==="calculator"); $("historyView").classList.toggle("active",view==="history"); if(view==="history") renderHistory(); window.scrollTo({top:0,behavior:"smooth"}); }
-
-function saveRecord(event) {
-  event.preventDefault(); const name=$("name").value.trim(); if(!name){$("message").textContent="名称・測点名を入力してください。";$("name").focus();return;}
-  const calc=calculate(); if(calc.error) return;
-  const existingId=$("recordId").value; const now=new Date().toISOString();
-  const record={id:existingId||crypto.randomUUID(),name,date:$("date").value||today(),memo:$("memo").value.trim(),mode:state.mode,dimensions:dimensionsForMode(),area:calc.area,updatedAt:now,createdAt:now};
-  const index=state.records.findIndex(r=>r.id===existingId); if(index>=0){record.createdAt=state.records[index].createdAt;state.records[index]=record;}else state.records.unshift(record);
-  persist(); renderHistory(); showToast(index>=0?"記録を更新しました":"計算結果を保存しました"); resetForm(); switchView("history");
-}
-function dimensionText(record) { const d=record.dimensions; return record.mode==="triangle"?`a ${d.a}m・b ${d.b}m・c ${d.c}m`:`上底 ${d.top}m・下底 ${d.bottom}m・高さ ${d.height}m`; }
-function renderHistory() {
-  $("historyCount").textContent=state.records.length; $("emptyState").classList.toggle("hidden",state.records.length>0); $("historyList").innerHTML=state.records.map(r=>`<article class="record"><input class="record-checkbox" type="checkbox" aria-label="${escapeHtml(r.name)}を合計に含める" data-select="${r.id}" ${state.selected.has(r.id)?"checked":""}><div class="record-main"><button type="button" data-edit="${r.id}"><div class="record-name">${escapeHtml(r.name)}</div><div class="record-meta">${r.date} ｜ ${r.mode==="triangle"?"三角形":"台形"}<br>${escapeHtml(dimensionText(r))}</div></button></div><div><div class="record-area">${formatArea(r.area)} <small>m²</small></div><div class="record-actions"><button type="button" data-edit="${r.id}">編集</button><button type="button" class="delete" data-delete="${r.id}">削除</button></div></div></article>`).join("");
-  updateTotal();
-}
-function updateTotal(){const chosen=state.records.filter(r=>state.selected.has(r.id));$("selectedCount").textContent=chosen.length;$("selectedTotal").textContent=formatArea(chosen.reduce((sum,r)=>sum+Number(r.area),0));}
-function editRecord(id){const r=state.records.find(v=>v.id===id);if(!r)return;resetForm();$("recordId").value=r.id;$("name").value=r.name;$("date").value=r.date;$("memo").value=r.memo||"";setMode(r.mode);if(r.mode==="triangle"){$("sideA").value=r.dimensions.a;$("sideB").value=r.dimensions.b;$("sideC").value=r.dimensions.c;}else{$("topBase").value=r.dimensions.top;$("bottomBase").value=r.dimensions.bottom;$("height").value=r.dimensions.height;}$("saveButton").textContent="変更を保存";calculate();switchView("calculator");}
-function deleteRecord(id){state.deleteId=id;$("deleteDialog").showModal();}
-function download(filename,content,type){const blob=new Blob([content],{type});const url=URL.createObjectURL(blob);const a=document.createElement("a");a.href=url;a.download=filename;a.click();setTimeout(()=>URL.revokeObjectURL(url),500);}
-function csvCell(value){return `"${String(value??"").replace(/"/g,'""')}"`;}
-function exportCsv(){if(!state.records.length){showToast("出力する記録がありません");return;}const head=["名称・測点名","日付","図形","辺a(m)","辺b(m)","辺c(m)","上底(m)","下底(m)","高さ(m)","面積(m²)","メモ"];const rows=state.records.map(r=>[r.name,r.date,r.mode==="triangle"?"三角形":"台形",r.dimensions.a,r.dimensions.b,r.dimensions.c,r.dimensions.top,r.dimensions.bottom,r.dimensions.height,r.area,r.memo].map(csvCell).join(","));download(`現場面積_${today()}.csv`,"\uFEFF"+[head.map(csvCell).join(","),...rows].join("\r\n"),"text/csv;charset=utf-8");}
-function exportJson(){download(`現場面積バックアップ_${today()}.json`,JSON.stringify({app:"現場面積ノート",version:1,exportedAt:new Date().toISOString(),records:state.records},null,2),"application/json");}
-async function importJson(file){try{const data=JSON.parse(await file.text());if(!data||!Array.isArray(data.records))throw new Error();const valid=data.records.filter(r=>r&&typeof r.id==="string"&&typeof r.name==="string"&&Number.isFinite(Number(r.area))&&["triangle","trapezoid"].includes(r.mode));if(valid.length!==data.records.length)throw new Error();const map=new Map(state.records.map(r=>[r.id,r]));valid.forEach(r=>map.set(r.id,r));state.records=[...map.values()].sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));persist();renderHistory();showToast(`${valid.length}件を復元しました`);}catch{showToast("このバックアップは読み込めません");}finally{$("importJsonInput").value="";}}
-
-document.querySelectorAll(".mode").forEach(b=>b.addEventListener("click",()=>setMode(b.dataset.mode)));
-document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));
-dimensionIds.forEach(id=>$(id).addEventListener("input",()=>calculate(false)));
-$("areaForm").addEventListener("submit",saveRecord);$("clearButton").addEventListener("click",resetForm);
-$("historyList").addEventListener("click",e=>{const edit=e.target.closest("[data-edit]");const del=e.target.closest("[data-delete]");if(edit)editRecord(edit.dataset.edit);if(del)deleteRecord(del.dataset.delete);});
-$("historyList").addEventListener("change",e=>{if(!e.target.matches("[data-select]"))return;e.target.checked?state.selected.add(e.target.dataset.select):state.selected.delete(e.target.dataset.select);updateTotal();});
-$("selectAllButton").addEventListener("click",()=>{state.records.forEach(r=>state.selected.add(r.id));renderHistory();});$("clearSelectionButton").addEventListener("click",()=>{state.selected.clear();renderHistory();});
-$("cancelDeleteButton").addEventListener("click",()=>$("deleteDialog").close());$("confirmDeleteButton").addEventListener("click",()=>{state.records=state.records.filter(r=>r.id!==state.deleteId);state.selected.delete(state.deleteId);persist();renderHistory();$("deleteDialog").close();showToast("記録を削除しました");});
-$("exportCsvButton").addEventListener("click",exportCsv);$("exportJsonButton").addEventListener("click",exportJson);$("importJsonInput").addEventListener("change",e=>e.target.files[0]&&importJson(e.target.files[0]));
-window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();state.deferredInstall=e;$("installButton").classList.remove("hidden");});$("installButton").addEventListener("click",async()=>{if(!state.deferredInstall)return;state.deferredInstall.prompt();await state.deferredInstall.userChoice;state.deferredInstall=null;$("installButton").classList.add("hidden");});
-if("serviceWorker" in navigator) window.addEventListener("load",()=>navigator.serviceWorker.register("./service-worker.js"));
-$("date").value=today();drawPreview();renderHistory();
+const STORAGE_KEY="field-area-drawings-v2",OLD_KEY="field-area-records-v1";
+const $=id=>document.getElementById(id);const uid=()=>crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random()}`;
+const state={mode:"triangle",shapes:[],selectedEdge:null,recordId:null,records:loadRecords(),confirmAction:null,deferredInstall:null,viewBox:"0 0 700 430"};
+function today(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
+function num(id){return Number($(id).value)}function fmt(v){return Number(v).toLocaleString("ja-JP",{minimumFractionDigits:3,maximumFractionDigits:3})}function esc(v){return String(v??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]))}
+function dist(a,b){return Math.hypot(b.x-a.x,b.y-a.y)}function midpoint(a,b){return{x:(a.x+b.x)/2,y:(a.y+b.y)/2}}function samePoint(a,b){return dist(a,b)<1e-6}function sameEdge(a,b,c,d){return(samePoint(a,c)&&samePoint(b,d))||(samePoint(a,d)&&samePoint(b,c))}
+function polygonArea(points){let s=0;for(let i=0;i<points.length;i++){const a=points[i],b=points[(i+1)%points.length];s+=a.x*b.y-b.x*a.y}return Math.abs(s)/2}
+function centroid(points){return{x:points.reduce((s,p)=>s+p.x,0)/points.length,y:points.reduce((s,p)=>s+p.y,0)/points.length}}
+function alignment(){return document.querySelector('input[name="alignment"]:checked').value}
+function shapeEdges(shape){return shape.points.map((p,i)=>({shapeId:shape.id,index:i,a:p,b:shape.points[(i+1)%shape.points.length]}))}
+function freeEdges(){const all=state.shapes.flatMap(shapeEdges);return all.filter((e,i)=>!all.some((o,j)=>j!==i&&sameEdge(e.a,e.b,o.a,o.b)))}
+function edgeByKey(key){return freeEdges().find(e=>`${e.shapeId}:${e.index}`===key)}
+function outwardNormal(edge,flip=false){const dx=edge.b.x-edge.a.x,dy=edge.b.y-edge.a.y,l=Math.hypot(dx,dy),left={x:-dy/l,y:dx/l};const parent=state.shapes.find(s=>s.id===edge.shapeId),c=centroid(parent.points);const cross=dx*(c.y-edge.a.y)-dy*(c.x-edge.a.x);let sign=cross>0?-1:1;if(flip)sign*=-1;return{x:left.x*sign,y:left.y*sign}}
+function makeTriangle(a,b,c,edge=null,flip=false){if(![a,b,c].every(v=>Number.isFinite(v)&&v>0))throw Error("すべての辺に0より大きい数値を入力してください。");if(a+b<=c||a+c<=b||b+c<=a)throw Error("この3辺では三角形が成立しません。");let p0={x:0,y:0},p1={x:c,y:0},normal={x:0,y:-1};if(edge){p0={...edge.a};p1={...edge.b};normal=outwardNormal(edge,flip)}const u={x:(p1.x-p0.x)/c,y:(p1.y-p0.y)/c};const x=(b*b+c*c-a*a)/(2*c),h=Math.sqrt(Math.max(0,b*b-x*x));const apex={x:p0.x+u.x*x+normal.x*h,y:p0.y+u.y*x+normal.y*h};return{id:uid(),type:"triangle",points:[p0,p1,apex],area:Math.sqrt(((a+b+c)/2)*(((a+b+c)/2)-a)*(((a+b+c)/2)-b)*(((a+b+c)/2)-c)),dimensions:{a,b,c},alignment:null}}
+function makeTrapezoid(top,bottom,h,align,edge=null,flip=false){if(![top,bottom,h].every(v=>Number.isFinite(v)&&v>0))throw Error("上底・下底・高さに0より大きい数値を入力してください。");let p0={x:0,y:0},p1={x:bottom,y:0},normal={x:0,y:-1};if(edge){p0={...edge.a};p1={...edge.b};normal=outwardNormal(edge,flip);bottom=dist(p0,p1)}const u={x:(p1.x-p0.x)/bottom,y:(p1.y-p0.y)/bottom};const offset=align==="left"?0:align==="right"?bottom-top:(bottom-top)/2;const q0={x:p0.x+u.x*offset+normal.x*h,y:p0.y+u.y*offset+normal.y*h};const q1={x:q0.x+u.x*top,y:q0.y+u.y*top};return{id:uid(),type:"trapezoid",points:[p0,p1,q1,q0],area:(top+bottom)*h/2,dimensions:{top,bottom,height:h},alignment:align}}
+function loadRecords(){try{const v=JSON.parse(localStorage.getItem(STORAGE_KEY)||"[]");if(Array.isArray(v))return v}catch{}return[]}
+function persist(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state.records))}
+function total(){return state.shapes.reduce((s,v)=>s+Number(v.area),0)}
+function color(i){return["#dce879","#a9d8c3","#f2c98b","#bfc9eb","#e6b8c5","#c9df9c"][i%6]}
+function fitView(){if(!state.shapes.length){state.viewBox="0 0 700 430";return}const pts=state.shapes.flatMap(s=>s.points),xs=pts.map(p=>p.x),ys=pts.map(p=>p.y);let minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);const w=Math.max(maxX-minX,1),h=Math.max(maxY-minY,1),pad=Math.max(w,h)*.22;state.viewBox=`${minX-pad} ${minY-pad} ${w+pad*2} ${h+pad*2}`}
+function renderCanvas(autoFit=false){if(autoFit)fitView();const svg=$("drawingCanvas");svg.setAttribute("viewBox",state.viewBox);if(!state.shapes.length){svg.innerHTML='<text x="350" y="205" text-anchor="middle" fill="#829189" font-size="18">ここに連続図面が表示されます</text><text x="350" y="235" text-anchor="middle" fill="#9aa69f" font-size="12">寸法を入力して最初の図形を追加</text>';return}const free=freeEdges(),selected=state.selectedEdge;let html="";state.shapes.forEach((s,i)=>{const pts=s.points.map(p=>`${p.x},${p.y}`).join(" "),c=centroid(s.points);html+=`<polygon class="shape-polygon" points="${pts}" fill="${color(i)}" fill-opacity=".78"/><text class="shape-label" x="${c.x}" y="${c.y}">${i+1}</text>`;shapeEdges(s).forEach((e,ei)=>{const m=midpoint(e.a,e.b);html+=`<text class="edge-length" x="${m.x}" y="${m.y-2}">${dist(e.a,e.b).toFixed(2)}m</text>`})});free.forEach(e=>{const key=`${e.shapeId}:${e.index}`;html+=`<line class="edge-line ${selected===key?"selected":""}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/><line class="edge-hit" data-edge="${key}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/>`});svg.innerHTML=html}
+function refreshEdgeOptions(){const edges=freeEdges(),old=state.selectedEdge;if(!edges.length){state.selectedEdge=null;return}if(!edges.some(e=>`${e.shapeId}:${e.index}`===old))state.selectedEdge=`${edges[0].shapeId}:${edges[0].index}`;$("edgeSelect").innerHTML=edges.map(e=>{const si=state.shapes.findIndex(s=>s.id===e.shapeId)+1,key=`${e.shapeId}:${e.index}`;return`<option value="${key}" ${key===state.selectedEdge?"selected":""}>図形 ${si}・辺 ${e.index+1}（${dist(e.a,e.b).toFixed(3)} m）</option>`}).join("");applySharedLength()}
+function applySharedLength(){const edge=edgeByKey(state.selectedEdge);if(!edge)return;const l=dist(edge.a,edge.b);$("sideC").value=l.toFixed(6);$("bottomBase").value=l.toFixed(6)}
+function renderParts(){$("partsSection").classList.toggle("hidden",!state.shapes.length);$("partsList").innerHTML=state.shapes.map((s,i)=>`<div class="part-row"><span class="part-number">${i+1}</span><div><strong>${s.type==="triangle"?"三角形":"台形"}${s.type==="trapezoid"?`・${{left:"左",center:"中央",right:"右"}[s.alignment]}揃え`:""}</strong><small>${dimensionText(s)}</small></div><div class="part-area">${fmt(s.area)} m²</div></div>`).join("")}
+function dimensionText(s){const d=s.dimensions;return s.type==="triangle"?`a ${d.a}m / b ${d.b}m / c ${d.c}m`:`上底 ${d.top}m / 下底 ${d.bottom}m / 高さ ${d.height}m`}
+function refresh(){const has=state.shapes.length>0;$("connectionPanel").classList.toggle("hidden",!has);$("flipField").classList.toggle("hidden",!has);$("stepNumber").textContent=has?"2":"1";$("sideC").readOnly=has;$("bottomBase").readOnly=has;$("sideCLabel").textContent=has?"接続辺 c":"辺 c";$("bottomBaseLabel").textContent=has?"接続辺（下底）":"下底";$("shapeCount").textContent=state.shapes.length;$("drawingTotal").textContent=fmt(total());$("printButton").disabled=!has;$("canvasHint").textContent=has?"緑色の外周辺をタップして次の接続先を選択":"最初の図形を追加してください";refreshEdgeOptions();renderCanvas(true);renderParts()}
+function clearInputs(){["sideA","sideB","sideC","topBase","bottomBase","height"].forEach(id=>$(id).value="");$("flipDirection").checked=false;document.querySelector('input[name="alignment"][value="center"]').checked=true;$("message").textContent="";applySharedLength()}
+function setMode(mode){state.mode=mode;document.querySelectorAll(".mode").forEach(b=>{const on=b.dataset.mode===mode;b.classList.toggle("active",on);b.setAttribute("aria-checked",String(on))});$("triangleFields").classList.toggle("hidden",mode!=="triangle");$("trapezoidFields").classList.toggle("hidden",mode!=="trapezoid");clearInputs()}
+function addShape(){try{const edge=state.shapes.length?edgeByKey(state.selectedEdge):null;if(state.shapes.length&&!edge)throw Error("接続する辺を選択してください。");const flip=$("flipDirection").checked;let shape;if(state.mode==="triangle"){shape=makeTriangle(num("sideA"),num("sideB"),edge?dist(edge.a,edge.b):num("sideC"),edge,flip)}else{shape=makeTrapezoid(num("topBase"),edge?dist(edge.a,edge.b):num("bottomBase"),num("height"),alignment(),edge,flip)}state.shapes.push(shape);clearInputs();refresh();showToast(`図形 ${state.shapes.length} を追加しました`)}catch(e){$("message").textContent=e.message}}
+function resetDrawing(){state.shapes=[];state.selectedEdge=null;state.recordId=null;$("name").value="";$("date").value=today();$("memo").value="";$("saveDrawingButton").textContent="図面を保存";setMode("triangle");refresh()}
+function ask(title,text,action){state.confirmAction=action;$("confirmTitle").textContent=title;$("confirmText").textContent=text;$("confirmDialog").showModal()}
+function saveDrawing(){const name=$("name").value.trim();if(!name){showToast("名称・測点名を入力してください");$("name").focus();return}if(!state.shapes.length){showToast("図形を1つ以上追加してください");return}const now=new Date().toISOString(),record={id:state.recordId||uid(),name,date:$("date").value||today(),memo:$("memo").value.trim(),shapes:structuredClone(state.shapes),total:total(),createdAt:now,updatedAt:now};const i=state.records.findIndex(r=>r.id===record.id);if(i>=0){record.createdAt=state.records[i].createdAt;state.records[i]=record}else state.records.unshift(record);state.recordId=record.id;persist();renderHistory();$("saveDrawingButton").textContent="変更を保存";showToast(i>=0?"図面を更新しました":"図面を保存しました")}
+function editRecord(id){const r=state.records.find(x=>x.id===id);if(!r)return;state.recordId=r.id;state.shapes=structuredClone(r.shapes);$("name").value=r.name;$("date").value=r.date;$("memo").value=r.memo||"";$("saveDrawingButton").textContent="変更を保存";refresh();switchView("drawing")}
+function renderHistory(){$("historyCount").textContent=state.records.length;$("emptyState").classList.toggle("hidden",state.records.length>0);$("historyList").innerHTML=state.records.map(r=>`<article class="record"><div class="record-main"><button type="button" data-edit="${r.id}"><div class="record-name">${esc(r.name)}</div><div class="record-meta">${esc(r.date)} ｜ ${r.shapes.length}図形${r.memo?`<br>${esc(r.memo)}`:""}</div></button></div><div><div class="record-area">${fmt(r.total)} <small>m²</small></div><div class="history-buttons"><button type="button" data-pdf="${r.id}">PDF</button><button type="button" data-edit="${r.id}">編集</button><button type="button" class="delete" data-delete="${r.id}">削除</button></div></div></article>`).join("")}
+function switchView(view){document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===view));$("drawingView").classList.toggle("active",view==="drawing");$("historyView").classList.toggle("active",view==="history");if(view==="history")renderHistory();window.scrollTo({top:0,behavior:"smooth"})}
+function printRecord(record=null){const r=record||{name:$("name").value.trim()||"未保存の図面",date:$("date").value||today(),memo:$("memo").value.trim(),shapes:state.shapes,total:total()};if(!r.shapes.length)return;const oldShapes=state.shapes,oldEdge=state.selectedEdge,oldVB=state.viewBox;state.shapes=r.shapes;state.selectedEdge=null;fitView();renderCanvas(false);const svg=$("drawingCanvas").outerHTML.replace('id="drawingCanvas"','class="print-svg"');state.shapes=oldShapes;state.selectedEdge=oldEdge;state.viewBox=oldVB;renderCanvas(false);$("printSheet").innerHTML=`<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table><thead><tr><th>No.</th><th>図形</th><th>寸法</th><th>面積</th></tr></thead><tbody>${r.shapes.map((s,i)=>`<tr><td>${i+1}</td><td>${s.type==="triangle"?"三角形":"台形"}</td><td>${esc(dimensionText(s))}</td><td>${fmt(s.area)} m²</td></tr>`).join("")}</tbody></table><div class="print-total">合計面積 ${fmt(r.total)} m²</div>${r.memo?`<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>`:""}<footer>現場面積ノート</footer>`;window.print()}
+function download(name,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),500)}function csvCell(v){return`"${String(v??"").replace(/"/g,'""')}"`}
+function exportCsv(){if(!state.records.length)return showToast("出力する記録がありません");const head=["名称・測点名","日付","図形数","合計面積(m²)","メモ"],rows=state.records.map(r=>[r.name,r.date,r.shapes.length,r.total,r.memo].map(csvCell).join(","));download(`現場面積_${today()}.csv`,"\uFEFF"+[head.map(csvCell).join(","),...rows].join("\r\n"),"text/csv;charset=utf-8")}
+function exportJson(){download(`現場面積バックアップ_${today()}.json`,JSON.stringify({app:"現場面積ノート",version:2,exportedAt:new Date().toISOString(),records:state.records},null,2),"application/json")}
+async function importJson(file){try{const data=JSON.parse(await file.text());if(!data||!Array.isArray(data.records)||!data.records.every(r=>r.id&&r.name&&Array.isArray(r.shapes)))throw Error();const map=new Map(state.records.map(r=>[r.id,r]));data.records.forEach(r=>map.set(r.id,r));state.records=[...map.values()].sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));persist();renderHistory();showToast(`${data.records.length}件を復元しました`)}catch{showToast("このバックアップは読み込めません")}finally{$("importJsonInput").value=""}}
+function showToast(text){const t=$("toast");t.textContent=text;t.classList.add("show");clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>t.classList.remove("show"),2200)}
+document.querySelectorAll(".mode").forEach(b=>b.addEventListener("click",()=>setMode(b.dataset.mode)));document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));$("edgeSelect").addEventListener("change",e=>{state.selectedEdge=e.target.value;applySharedLength();renderCanvas(false)});$("drawingCanvas").addEventListener("click",e=>{const hit=e.target.closest("[data-edge]");if(!hit)return;state.selectedEdge=hit.dataset.edge;refreshEdgeOptions();renderCanvas(false);showToast("接続辺を選択しました")});$("fitButton").addEventListener("click",()=>renderCanvas(true));$("addShapeButton").addEventListener("click",addShape);$("undoButton").addEventListener("click",()=>ask("最後の図形を戻しますか？","最後に追加した図形と、その接続を削除します。",()=>{state.shapes.pop();refresh();showToast("最後の図形を戻しました")}));$("newButton").addEventListener("click",()=>state.shapes.length?ask("新しい図面を作りますか？","未保存の変更は失われます。",resetDrawing):resetDrawing());$("saveDrawingButton").addEventListener("click",saveDrawing);$("printButton").addEventListener("click",()=>printRecord());
+$("historyList").addEventListener("click",e=>{const edit=e.target.closest("[data-edit]"),del=e.target.closest("[data-delete]"),pdf=e.target.closest("[data-pdf]");if(edit)editRecord(edit.dataset.edit);if(pdf){const r=state.records.find(x=>x.id===pdf.dataset.pdf);if(r)printRecord(r)}if(del)ask("図面を削除しますか？","削除した図面は元に戻せません。",()=>{state.records=state.records.filter(r=>r.id!==del.dataset.delete);persist();renderHistory();showToast("図面を削除しました")})});$("cancelConfirmButton").addEventListener("click",()=>$("confirmDialog").close());$("acceptConfirmButton").addEventListener("click",()=>{const fn=state.confirmAction;$("confirmDialog").close();state.confirmAction=null;if(fn)fn()});$("exportCsvButton").addEventListener("click",exportCsv);$("exportJsonButton").addEventListener("click",exportJson);$("importJsonInput").addEventListener("change",e=>e.target.files[0]&&importJson(e.target.files[0]));window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();state.deferredInstall=e;$("installButton").classList.remove("hidden")});$("installButton").addEventListener("click",async()=>{if(!state.deferredInstall)return;state.deferredInstall.prompt();await state.deferredInstall.userChoice;state.deferredInstall=null;$("installButton").classList.add("hidden")});if("serviceWorker"in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("./service-worker.js"));$("date").value=today();refresh();renderHistory();
