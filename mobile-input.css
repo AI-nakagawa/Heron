@@ -1,0 +1,21 @@
+/* Native smartphone keyboard dictation and non-sticky bottom actions */
+.voice-help {
+  display: block;
+}
+
+body {
+  padding-bottom: calc(16px + env(safe-area-inset-bottom));
+}
+
+.sticky-actions {
+  position: static;
+  margin-top: 12px;
+  padding: 10px 0 calc(10px + env(safe-area-inset-bottom));
+  background: transparent;
+  backdrop-filter: none;
+  border-top: 1px solid var(--line);
+}
+
+.toast {
+  bottom: calc(20px + env(safe-area-inset-bottom));
+}
