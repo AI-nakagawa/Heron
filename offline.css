@@ -1,0 +1,41 @@
+.voice-help {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.voice-help span {
+  flex: 1;
+}
+
+.voice-help button {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 1px solid #99aa9f;
+  border-radius: 9px;
+  background: #fff;
+  color: var(--green);
+  font-weight: 850;
+  font-size: 12px;
+}
+
+.voice-help button:disabled {
+  opacity: .55;
+}
+
+.voice-help button[hidden] {
+  display: none;
+}
+
+@media (max-width: 430px) {
+  .voice-help {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .voice-help button {
+    width: 100%;
+  }
+}
