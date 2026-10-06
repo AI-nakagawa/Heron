@@ -53,3 +53,53 @@ body.outdoor .chip{border-color:#33433c;font-size:16px}
 body.outdoor .quick-card,body.outdoor .flip-field{background:#e9eee6}
 body.outdoor .swap-button,body.outdoor .part-edit,body.outdoor .canvas-tools button{border:2px solid #33433c;min-height:48px}
 body.outdoor .helper,body.outdoor small,body.outdoor .quick-help{color:#25332d}
+
+/* v12: 図面を見ながら入力（全画面）。キーボード表示中も図面と入力欄が1画面に収まる */
+.measure-launch{display:flex;align-items:center;gap:12px;width:100%;text-align:left;border:2px solid var(--green-2);background:#edf6f0;border-radius:14px;padding:12px 14px;color:var(--green);margin-bottom:4px}
+.measure-launch-icon{font-size:26px;line-height:1}.measure-launch b{display:block;font-size:17px}.measure-launch small{display:block;color:var(--muted);font-size:12px;margin-top:2px;font-weight:700}
+.canvas-tools .measure-tool{background:var(--green);color:#fff;border-color:var(--green)}
+body.measuring{overflow:hidden}
+.measure-overlay{position:fixed;left:0;right:0;top:0;height:100vh;z-index:50;display:flex;flex-direction:column;background:var(--paper)}
+.measure-overlay[hidden]{display:none}
+.measure-toolbar{flex:none;display:flex;gap:6px;padding:calc(6px + env(safe-area-inset-top)) 8px 6px;background:var(--green);overflow-x:auto;scrollbar-width:none}
+.m-btn{flex:none;min-height:40px;padding:0 11px;border:1px solid rgba(255,255,255,.35);border-radius:10px;background:rgba(255,255,255,.12);color:#fff;font-weight:800;font-size:14px;white-space:nowrap}
+.m-btn[aria-pressed="true"]{background:var(--lime);color:var(--green);border-color:var(--lime)}.m-btn:disabled{opacity:.35}
+#measureClose{font-size:17px;min-width:44px}
+.measure-canvas-wrap{position:relative;flex:1 1 auto;min-height:100px;background-color:#f7f8f2;background-image:linear-gradient(#e5e9e1 1px,transparent 1px),linear-gradient(90deg,#e5e9e1 1px,transparent 1px);background-size:24px 24px}
+#measureCanvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.measure-overlay .edge-hit{stroke-width:30}
+.measure-total{flex:none;padding:3px 10px;background:#fffdf7;border-bottom:1px solid var(--line);font-size:12px;font-weight:800;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.measure-total b{font-size:16px;color:var(--green)}.measure-total .plus{color:var(--green-2)}.measure-total .minus{color:var(--danger)}
+.measure-panel{flex:none;display:grid;grid-template-columns:minmax(0,1fr);gap:5px;background:var(--surface);border-top:1px solid var(--line);padding:6px 8px calc(6px + env(safe-area-inset-bottom))}
+body.keyboard-open .measure-panel{padding-bottom:6px}
+.measure-hint{display:flex;justify-content:space-between;flex-wrap:wrap;gap:2px 10px;font-size:12px;font-weight:800;color:var(--muted)}#measureEdge{color:#c4561c}
+.measure-panel .quick-parsed{margin:0;gap:5px}.measure-panel .chip{padding:2px 9px;font-size:13px}.measure-panel .quick-status{font-size:11.5px}
+.measure-status{font-size:13px;font-weight:700;line-height:1.45}.measure-status b{color:var(--green);font-size:16px}.measure-status .warn{display:block;color:#8f480b;font-size:12px}
+.measure-status.idle{color:var(--muted);font-weight:600;font-size:12px}.measure-status.error{color:var(--danger);font-size:12px}
+.measure-input-row{display:flex;gap:6px}
+.measure-input-row #quickInput{flex:1 1 0;min-width:0;width:auto;height:50px;padding:0 12px}
+.measure-panel .m-btn{min-height:50px;padding:0 10px;border:0;background:#e3ebe5;color:var(--green)}
+.m-add{flex:none;min-width:78px;height:50px;border:0;border-radius:12px;background:var(--green);color:#fff;font-weight:900;font-size:17px;box-shadow:0 5px 14px rgba(23,76,60,.25)}
+body.measuring .toast{top:calc(var(--vv-top,0px) + 62px);bottom:auto}
+body.outdoor .measure-input-row #quickInput{height:58px;font-size:24px}
+body.outdoor .m-add,body.outdoor .measure-panel .m-btn{min-height:58px;height:58px}
+body.outdoor .measure-status{font-size:15px}
+body.outdoor .m-btn{font-size:15px}
+
+/* v12.1: 名称・日付・設計面積を1行に畳む */
+.project-card{position:relative}
+.project-collapse{position:absolute;top:3px;right:8px;z-index:3;border:0;background:#e7eee8;color:var(--green);border-radius:7px;padding:1px 9px;font-size:11px;line-height:18px;font-weight:800}
+.canvas-tools button{white-space:nowrap}.canvas-heading>div:first-child{min-width:0}
+.project-summary{display:none;width:100%;align-items:center;justify-content:space-between;gap:10px;border:0;background:none;padding:2px 2px;color:var(--ink);text-align:left;min-height:36px}
+.project-summary-text{display:flex;align-items:baseline;gap:8px;min-width:0;overflow:hidden;white-space:nowrap}
+.project-summary-text b{font-size:15px;overflow:hidden;text-overflow:ellipsis}
+.project-summary-text small{color:var(--muted);font-size:12px;font-weight:700;overflow:hidden;text-overflow:ellipsis}
+.project-summary-text em{font-style:normal;color:var(--danger);font-weight:800;font-size:14px}
+.project-toggle{flex:none;background:#e7eee8;color:var(--green);border-radius:8px;padding:4px 10px;font-size:12px;font-weight:800}
+.project-card.collapsed{padding-top:6px;padding-bottom:6px}
+.project-card.collapsed .meta-grid,.project-card.collapsed .project-collapse{display:none}
+.project-card.collapsed .project-summary{display:flex}
+body.outdoor .project-toggle{border:2px solid #33433c;padding:6px 12px;font-size:14px}body.outdoor .project-collapse{border:2px solid #33433c;line-height:14px}
+body.outdoor .project-summary{min-height:48px}
+/* 畳んで空いた分を図面の高さに回す */
+@media(max-width:560px){.project-card.collapsed~.canvas-card .drawing-scroll svg{min-height:350px}}

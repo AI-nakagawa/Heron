@@ -1,7 +1,7 @@
 "use strict";
 const STORAGE_KEY = "field-area-drawings-v2", SETTINGS_KEY = "field-area-settings-v1";
 const THIN_ANGLE_DEG = 20; // これより小さい角を持つ三角形は警告する
-const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true };
+const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true, measureKeyboard: "voice", projectCollapsed: false };
 const $ = id => document.getElementById(id);
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
 const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, deferredInstall: null, viewBox: "0 0 700 430", wakeLock: null, wakeLockPending: false };
@@ -168,18 +168,18 @@ function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringif
 
 // ---------- 図面 ----------
 function color(i) { return ["#dce879", "#a9d8c3", "#f2c98b", "#bfc9eb", "#e6b8c5", "#c9df9c"][i % 6]; }
-function viewBoxFor(points) {
+function viewBoxFor(points, padRatio = .22) {
   if (!points.length) return "0 0 700 430";
   const xs = points.map(p => p.x), ys = points.map(p => p.y);
   const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
-  const w = Math.max(maxX - minX, 1), h = Math.max(maxY - minY, 1), pad = Math.max(w, h) * .22;
+  const w = Math.max(maxX - minX, 1), h = Math.max(maxY - minY, 1), pad = Math.max(w, h) * padRatio;
   return `${minX - pad} ${minY - pad} ${w + pad * 2} ${h + pad * 2}`;
 }
 function fitView() { const ghost = state.candidate?.shape; state.viewBox = viewBoxFor([...state.shapes, ...(ghost ? [ghost] : [])].flatMap(s => s.points)); }
-function svgMarkup(shapes, { viewBox, selectedEdge = null, ghost = null, interactive = false }) {
+function svgMarkup(shapes, { viewBox, selectedEdge = null, ghost = null, interactive = false, textScale = 1 }) {
   if (!shapes.length && !ghost) return '<text x="350" y="205" text-anchor="middle" fill="#829189" font-size="18">ここに連続図面が表示されます</text><text x="350" y="235" text-anchor="middle" fill="#9aa69f" font-size="12">寸法を入力して最初の図形を追加</text>';
   const vb = viewBox.split(/\s+/).map(Number), scale = Math.max(vb[2], vb[3]);
-  const labelSize = scale * .045, edgeSize = scale * .025, labelOffset = scale * .012, halo = scale * .006, vertexSize = scale * .03;
+  const t = scale * textScale, labelSize = t * .045, edgeSize = t * .025, labelOffset = t * .012, halo = t * .006, vertexSize = t * .03;
   const all = ghost ? [...shapes, ghost] : shapes, vertices = vertexList(all), center = centroid(all.flatMap(s => s.points));
   let html = "";
   const labeled = [];
@@ -209,15 +209,20 @@ function svgMarkup(shapes, { viewBox, selectedEdge = null, ghost = null, interac
   }
   vertices.forEach(v => {
     const dx = v.x - center.x, dy = v.y - center.y, l = Math.hypot(dx, dy) || 1;
-    html += `<circle class="vertex-dot" cx="${v.x}" cy="${v.y}" r="${scale * .006}"/><text class="vertex-label" style="font-size:${vertexSize}px;stroke-width:${halo}px" x="${v.x + dx / l * vertexSize}" y="${v.y + dy / l * vertexSize}">${v.name}</text>`;
+    html += `<circle class="vertex-dot" cx="${v.x}" cy="${v.y}" r="${t * .006}"/><text class="vertex-label" style="font-size:${vertexSize}px;stroke-width:${halo}px" x="${v.x + dx / l * vertexSize}" y="${v.y + dy / l * vertexSize}">${v.name}</text>`;
   });
   return html;
 }
 function renderCanvas(autoFit = false) {
   if (autoFit) fitView();
+  const opts = { selectedEdge: state.editingId ? null : state.selectedEdge, ghost: state.candidate?.shape, interactive: !state.editingId };
   const svg = $("drawingCanvas");
-  svg.setAttribute("viewBox", state.viewBox);
-  svg.innerHTML = svgMarkup(state.shapes, { viewBox: state.viewBox, selectedEdge: state.editingId ? null : state.selectedEdge, ghost: state.candidate?.shape, interactive: !state.editingId });
+  svg.setAttribute("viewBox", state.viewBox); svg.innerHTML = svgMarkup(state.shapes, { ...opts, viewBox: state.viewBox });
+  if (measureOpen()) {
+    // 全画面は図面が小さくなりやすいので、余白を詰めて文字を大きめに描く
+    const ghost = state.candidate?.shape, viewBox = viewBoxFor([...state.shapes, ...(ghost ? [ghost] : [])].flatMap(s => s.points), .12);
+    const big = $("measureCanvas"); big.setAttribute("viewBox", viewBox); big.innerHTML = svgMarkup(state.shapes, { ...opts, viewBox, textScale: 1.6 });
+  }
 }
 
 // ---------- 入力フォーム ----------
@@ -258,7 +263,7 @@ function applyQuickInput() {
   let status;
   if (values.length < targets.length) status = `<span class="quick-status">あと${targets.length - values.length}つ</span>`;
   else if (values.length > targets.length) status = `<span class="quick-status warn">数が${values.length}個あります。最初の${targets.length}個を使います</span>`;
-  else status = `<span class="quick-status ok">✓ そろいました（キーボードの完了・改行で追加）</span>`;
+  else status = `<span class="quick-status ok">✓ そろいました（改行キーか「追加」で追加）</span>`;
   $("quickParsed").innerHTML = chips + status;
   updatePreview();
 }
@@ -277,30 +282,37 @@ function buildCandidate() {
   }
   if (shape.type === "triangle") {
     const m = minAngle(shape);
-    if (m < THIN_ANGLE_DEG) warnings.push(`最小角が ${m.toFixed(1)}° の細長い三角形です。テープの数cmの誤差が面積に大きく響くため、分け方の見直しや再計測を検討してください。`);
+    if (m < THIN_ANGLE_DEG) warnings.push({ text: `最小角が ${m.toFixed(1)}° の細長い三角形です。テープの数cmの誤差が面積に大きく響くため、分け方の見直しや再計測を検討してください。`, short: `細長い三角形（最小角 ${m.toFixed(1)}°）` });
   }
   const hits = overlappingNumbers(shape, state.shapes.filter(s => s.id !== editing?.id));
-  if (hits.length) warnings.push(`図形 ${hits.join("・")} と重なっています。「接続方向を反転する」や a・b の入れ替えを確認してください。`);
+  if (hits.length) warnings.push({ text: `図形 ${hits.join("・")} と重なっています。「接続方向を反転する」や a・b の入れ替えを確認してください。`, short: `図形 ${hits.join("・")} と重なり（反転・a⇄b を確認）` });
   return { shape, warnings, overlap: hits.length > 0, rebuilt };
 }
 function updatePreview() {
-  const box = $("previewBox"), filled = requiredFields().every(id => $(id).value.trim() !== "");
+  const box = $("previewBox"), status = $("measureStatus"), filled = requiredFields().every(id => $(id).value.trim() !== "");
   state.candidate = null;
   if (!filled) {
     box.className = "preview-box idle";
     box.textContent = "寸法を入れると、ここに面積が、図面に点線で追加位置が表示されます。";
+    status.className = "measure-status idle";
+    status.textContent = "寸法を話すか入力すると、図面に点線で表示されます";
   } else {
     try {
       const cand = buildCandidate(); state.candidate = cand;
       const editing = editingShape();
-      const after = cand.rebuilt ? computeTotal(cand.rebuilt) : computeTotal([...state.shapes, cand.shape]);
+      const area = fmt(roundArea(cand.shape.area)), after = fmt(cand.rebuilt ? computeTotal(cand.rebuilt) : computeTotal([...state.shapes, cand.shape]));
       box.className = `preview-box${cand.warnings.length ? " has-warning" : ""}`;
-      box.innerHTML = `<div class="preview-line"><span>${editing ? "修正後の図形" : "この図形"} <b>${fmt(roundArea(cand.shape.area))}</b> m²</span><span>${editing ? "修正後の合計" : "追加後の合計"} <b>${fmt(after)}</b> m²</span></div>${cand.warnings.map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join("")}`;
+      box.innerHTML = `<div class="preview-line"><span>${editing ? "修正後の図形" : "この図形"} <b>${area}</b> m²</span><span>${editing ? "修正後の合計" : "追加後の合計"} <b>${after}</b> m²</span></div>${cand.warnings.map(w => `<p class="warn">⚠ ${esc(w.text)}</p>`).join("")}`;
+      status.className = "measure-status";
+      status.innerHTML = `${editing ? "修正後" : "この図形"} <b>${area}</b> m² → 合計 <b>${after}</b> m²${cand.warnings.map(w => `<span class="warn">⚠ ${esc(w.short)}</span>`).join("")}`;
     } catch (e) {
       box.className = "preview-box error";
       box.textContent = e.message;
+      status.className = "measure-status error";
+      status.textContent = e.message;
     }
   }
+  syncMeasureTools();
   renderCanvas(true);
 }
 function clearInputs() {
@@ -319,8 +331,19 @@ function setMode(mode) {
   clearInputs(); updateQuickHint(); updatePreview();
 }
 function swapAB() {
-  const a = $("sideA").value; $("sideA").value = $("sideB").value; $("sideB").value = a;
-  updatePreview(); showToast("a と b を入れ替えました");
+  const values = parseLengths($("quickInput").value);
+  if (values.length >= 2) {
+    [values[0], values[1]] = [values[1], values[0]];
+    $("quickInput").value = values.map(fmtLen).join(" ");
+    applyQuickInput();
+  } else {
+    const a = $("sideA").value; $("sideA").value = $("sideB").value; $("sideB").value = a;
+    updatePreview();
+  }
+  showToast("a と b を入れ替えました");
+}
+function undoLast() {
+  ask("最後の図形を戻しますか？", "最後に追加した図形と、その接続を削除します。", () => { state.shapes.pop(); refresh(); showToast("最後の図形を戻しました"); if (measureOpen()) focusQuick(); });
 }
 
 // ---------- 図形の追加・修正 ----------
@@ -339,9 +362,9 @@ function addShape() {
       if (next) state.selectedEdge = edgeKey(next);
       clearInputs(); refresh(); showToast(`図形 ${state.shapes.length} を追加しました`);
     }
-    $("quickInput").blur();
+    if (measureOpen()) focusQuick(); else $("quickInput").blur();
   };
-  if (cand.overlap) ask("図形が重なっています", `${cand.warnings.at(-1)}\nこのまま${editing ? "修正" : "追加"}しますか？`, commit, editing ? "修正する" : "追加する");
+  if (cand.overlap) ask("図形が重なっています", `${cand.warnings.at(-1).text}\nこのまま${editing ? "修正" : "追加"}しますか？`, commit, editing ? "修正する" : "追加する");
   else commit();
 }
 function startEdit(id) {
@@ -381,6 +404,54 @@ function renderSummary() {
   const d = designDiff(total, design);
   $("designSummary").classList.toggle("hidden", !d);
   if (d) $("designSummary").innerHTML = `設計 ${fmt(design)} m² ／ 差 <b class="${d.diff > 0 ? "plus" : d.diff < 0 ? "minus" : ""}">${diffText(total, design)}</b>`;
+  $("measureTotal").innerHTML = `${state.shapes.length} 図形　合計 <b>${fmt(total)}</b> m²${d ? `　設計比 <span class="${d.diff > 0 ? "plus" : d.diff < 0 ? "minus" : ""}">${diffText(total, design)}</span>` : ""}`;
+}
+
+// ---------- 図面を見ながら入力（全画面） ----------
+function measureOpen() { return !$("measureOverlay").hidden; }
+function focusQuick() { const input = $("quickInput"); input.focus({ preventScroll: true }); try { input.setSelectionRange(input.value.length, input.value.length); } catch { } }
+function syncMeasureTools() {
+  const editing = editingShape(), locked = baseLocked(), edge = lockedEdge();
+  $("measureMode").textContent = state.mode === "triangle" ? "△ 三角形" : "▱ 台形";
+  $("measureMode").disabled = !!editing;
+  $("measureSwap").classList.toggle("hidden", state.mode !== "triangle");
+  $("measureFlip").classList.toggle("hidden", !locked);
+  $("measureFlip").setAttribute("aria-pressed", String($("flipDirection").checked));
+  $("measureUndo").disabled = !state.shapes.length || !!editing;
+  $("measureAdd").textContent = editing ? "修正" : "追加";
+  const vertices = vertexList(state.shapes);
+  $("measureEdge").textContent = editing ? `図形 ${state.shapes.indexOf(editing) + 1} を修正中` : edge && locked ? `接続辺 ${vertexNameOf(edge.a, vertices)}–${vertexNameOf(edge.b, vertices)}（${fmtLen(dist(edge.a, edge.b))} m）` : "";
+}
+function layoutMeasure() {
+  if (!measureOpen()) return;
+  const vv = window.visualViewport, top = vv ? vv.offsetTop : 0, height = vv ? vv.height : window.innerHeight;
+  const overlay = $("measureOverlay");
+  overlay.style.top = `${top}px`; overlay.style.height = `${height}px`;
+  document.documentElement.style.setProperty("--vv-top", `${top}px`);
+  document.body.classList.toggle("keyboard-open", window.innerHeight - height > 120);
+}
+function setMeasureKeyboard(kind) {
+  state.settings.measureKeyboard = kind; saveSettings();
+  $("quickInput").inputMode = kind === "numeric" ? "decimal" : "text";
+  $("measureKeyboard").textContent = kind === "numeric" ? "🎙あ" : "123";
+  $("measureKeyboard").setAttribute("aria-label", kind === "numeric" ? "音声入力できるキーボードに切り替え" : "数字キーボードに切り替え");
+  $("measureNext").classList.toggle("hidden", kind !== "numeric");
+}
+function openMeasure() {
+  if (measureOpen()) return;
+  $("measureOverlay").hidden = false;
+  document.body.classList.add("measuring");
+  if (!history.state?.measure) history.pushState({ measure: true }, "");
+  layoutMeasure(); syncMeasureTools(); renderCanvas(true);
+  focusQuick();
+}
+function closeMeasure(fromHistory = false) {
+  if (!measureOpen()) return;
+  $("measureOverlay").hidden = true;
+  document.body.classList.remove("measuring", "keyboard-open");
+  $("quickInput").blur();
+  if (!fromHistory && history.state?.measure) history.back();
+  renderCanvas(true);
 }
 function renderParts() {
   const vertices = vertexList(state.shapes);
@@ -397,7 +468,19 @@ function resetDrawing() {
   state.shapes = []; state.selectedEdge = null; state.recordId = null; state.editingId = null;
   $("name").value = ""; $("date").value = today(); $("designArea").value = ""; $("memo").value = "";
   $("saveDrawingButton").textContent = "図面を保存";
-  setMode("triangle"); refresh();
+  setProjectCollapsed(false); setMode("triangle"); refresh();
+}
+// 名称・日付・設計面積は一度入れたら見返さないので、1行の要約に畳んで図面を広く使えるようにする
+function renderProjectSummary() {
+  const name = $("name").value.trim(), date = $("date").value, design = num("designArea");
+  const detail = [date ? date.replaceAll("-", "/") : "", design > 0 ? `設計 ${fmt(design)} m²` : ""].filter(Boolean).join("・");
+  $("projectSummaryText").innerHTML = `${name ? `<b>${esc(name)}</b>` : '<em>名称未入力</em>'}${detail ? `<small>${esc(detail)}</small>` : ""}`;
+}
+function setProjectCollapsed(on) {
+  state.settings.projectCollapsed = on; saveSettings();
+  $("projectCard").classList.toggle("collapsed", on);
+  $("projectExpand").setAttribute("aria-expanded", String(!on));
+  renderProjectSummary();
 }
 function ask(title, text, action, acceptLabel = "実行") {
   state.confirmAction = action;
@@ -406,7 +489,7 @@ function ask(title, text, action, acceptLabel = "実行") {
 }
 function saveDrawing() {
   const name = $("name").value.trim();
-  if (!name) { showToast("名称・測点名を入力してください"); $("name").focus(); return; }
+  if (!name) { showToast("名称・測点名を入力してください"); setProjectCollapsed(false); $("name").focus(); return; }
   if (!state.shapes.length) { showToast("図形を1つ以上追加してください"); return; }
   if (state.editingId) { showToast("図形の修正を確定するか、やめてから保存してください"); return; }
   const now = new Date().toISOString(), design = num("designArea");
@@ -422,7 +505,7 @@ function editRecord(id) {
   state.recordId = r.id; state.editingId = null; state.shapes = withConnections(structuredClone(r.shapes));
   $("name").value = r.name; $("date").value = r.date; $("designArea").value = r.designArea ? fmtLen(r.designArea) : ""; $("memo").value = r.memo || "";
   $("saveDrawingButton").textContent = "変更を保存";
-  state.selectedEdge = null; clearInputs(); refresh(); switchView("drawing");
+  state.selectedEdge = null; clearInputs(); refresh(); renderProjectSummary(); switchView("drawing");
 }
 function renderHistory() {
   $("historyCount").textContent = state.records.length;
@@ -523,7 +606,10 @@ DIMENSION_FIELDS.forEach(id => {
   $(id).addEventListener("input", () => { $("message").textContent = ""; updatePreview(); });
   $(id).addEventListener("change", () => { const v = parseLength($(id).value); if (Number.isFinite(v)) $(id).value = fmtLen(v); updatePreview(); });
 });
-$("designArea").addEventListener("input", renderSummary);
+$("designArea").addEventListener("input", () => { renderSummary(); renderProjectSummary(); });
+["name", "date"].forEach(id => $(id).addEventListener("input", renderProjectSummary));
+$("projectCollapse").addEventListener("click", () => setProjectCollapsed(true));
+$("projectExpand").addEventListener("click", () => setProjectCollapsed(false));
 $("designArea").addEventListener("change", () => { const v = parseLength($("designArea").value); if (Number.isFinite(v)) $("designArea").value = fmtLen(v); renderSummary(); });
 document.querySelectorAll('input[name="alignment"]').forEach(r => r.addEventListener("change", updatePreview));
 $("flipDirection").addEventListener("change", updatePreview);
@@ -537,7 +623,29 @@ $("drawingCanvas").addEventListener("click", e => {
 $("partsList").addEventListener("click", e => { const b = e.target.closest("[data-edit-shape]"); if (b) startEdit(b.dataset.editShape); });
 $("fitButton").addEventListener("click", () => renderCanvas(true));
 $("addShapeButton").addEventListener("click", addShape);
-$("undoButton").addEventListener("click", () => ask("最後の図形を戻しますか？", "最後に追加した図形と、その接続を削除します。", () => { state.shapes.pop(); refresh(); showToast("最後の図形を戻しました"); }));
+$("undoButton").addEventListener("click", undoLast);
+$("openMeasureButton").addEventListener("click", openMeasure);
+$("openMeasureTool").addEventListener("click", openMeasure);
+$("measureClose").addEventListener("click", () => closeMeasure());
+$("measureMode").addEventListener("click", () => { setMode(state.mode === "triangle" ? "trapezoid" : "triangle"); focusQuick(); });
+$("measureSwap").addEventListener("click", () => { swapAB(); focusQuick(); });
+$("measureFlip").addEventListener("click", () => { $("flipDirection").checked = !$("flipDirection").checked; updatePreview(); focusQuick(); });
+$("measureUndo").addEventListener("click", undoLast);
+$("measureAdd").addEventListener("click", () => { addShape(); if (measureOpen() && !$("confirmDialog").open) focusQuick(); });
+$("measureNext").addEventListener("click", () => { const input = $("quickInput"); if (input.value.trim()) { input.value = input.value.trimEnd() + " "; applyQuickInput(); } focusQuick(); });
+$("measureKeyboard").addEventListener("click", () => { setMeasureKeyboard(state.settings.measureKeyboard === "numeric" ? "voice" : "numeric"); $("quickInput").blur(); focusQuick(); });
+$("measureCanvas").addEventListener("click", e => {
+  const hit = e.target.closest("[data-edge]"); if (!hit || state.editingId) return;
+  state.selectedEdge = hit.dataset.edge; refreshEdgeOptions(); applySharedLength(); updateQuickHint();
+  if ($("quickInput").value.trim()) applyQuickInput(); else updatePreview();
+  showToast("接続辺を選択しました");
+});
+// 全画面のボタンや図面を押してもキーボードが閉じないよう、入力欄からフォーカスを外さない
+$("measureOverlay").addEventListener("mousedown", e => { if (e.target !== $("quickInput")) e.preventDefault(); });
+if (history.state?.measure) history.replaceState(null, ""); // 再読み込み後に全画面の履歴が残らないように
+window.addEventListener("popstate", () => closeMeasure(true));
+if (window.visualViewport) { visualViewport.addEventListener("resize", layoutMeasure); visualViewport.addEventListener("scroll", layoutMeasure); }
+window.addEventListener("resize", layoutMeasure);
 $("newButton").addEventListener("click", () => state.shapes.length ? ask("新しい図面を作りますか？", "未保存の変更は失われます。", resetDrawing) : resetDrawing());
 $("saveDrawingButton").addEventListener("click", saveDrawing);
 $("printButton").addEventListener("click", () => printRecord());
@@ -566,4 +674,4 @@ window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); state.
 $("installButton").addEventListener("click", async () => { if (!state.deferredInstall) return; state.deferredInstall.prompt(); await state.deferredInstall.userChoice; state.deferredInstall = null; $("installButton").classList.add("hidden"); });
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js"));
 $("date").value = today();
-applySettings(); updateQuickHint(); refresh(); renderHistory(); updateWakeLock();
+applySettings(); setMeasureKeyboard(state.settings.measureKeyboard); setProjectCollapsed(state.settings.projectCollapsed); updateQuickHint(); refresh(); renderHistory(); updateWakeLock();
