@@ -1,96 +1,569 @@
 "use strict";
-const STORAGE_KEY="field-area-drawings-v2",OLD_KEY="field-area-records-v1";
-const $=id=>document.getElementById(id);const uid=()=>crypto.randomUUID?crypto.randomUUID():`${Date.now()}-${Math.random()}`;
-const state={mode:"triangle",shapes:[],selectedEdge:null,recordId:null,records:loadRecords(),confirmAction:null,deferredInstall:null,viewBox:"0 0 700 430"};
-function today(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`}
-function num(id){return Number($(id).value)}function fmt(v){return Number(v).toLocaleString("ja-JP",{minimumFractionDigits:3,maximumFractionDigits:3})}function esc(v){return String(v??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]))}
-function dist(a,b){return Math.hypot(b.x-a.x,b.y-a.y)}function midpoint(a,b){return{x:(a.x+b.x)/2,y:(a.y+b.y)/2}}function samePoint(a,b){return dist(a,b)<1e-6}function sameEdge(a,b,c,d){return(samePoint(a,c)&&samePoint(b,d))||(samePoint(a,d)&&samePoint(b,c))}
-function polygonArea(points){let s=0;for(let i=0;i<points.length;i++){const a=points[i],b=points[(i+1)%points.length];s+=a.x*b.y-b.x*a.y}return Math.abs(s)/2}
-function centroid(points){return{x:points.reduce((s,p)=>s+p.x,0)/points.length,y:points.reduce((s,p)=>s+p.y,0)/points.length}}
-function alignment(){return document.querySelector('input[name="alignment"]:checked').value}
-function shapeEdges(shape){return shape.points.map((p,i)=>({shapeId:shape.id,index:i,a:p,b:shape.points[(i+1)%shape.points.length]}))}
-function freeEdges(){const all=state.shapes.flatMap(shapeEdges);return all.filter((e,i)=>!all.some((o,j)=>j!==i&&sameEdge(e.a,e.b,o.a,o.b)))}
-function edgeByKey(key){return freeEdges().find(e=>`${e.shapeId}:${e.index}`===key)}
-function outwardNormal(edge,flip=false){const dx=edge.b.x-edge.a.x,dy=edge.b.y-edge.a.y,l=Math.hypot(dx,dy),left={x:-dy/l,y:dx/l};const parent=state.shapes.find(s=>s.id===edge.shapeId),c=centroid(parent.points);const cross=dx*(c.y-edge.a.y)-dy*(c.x-edge.a.x);let sign=cross>0?-1:1;if(flip)sign*=-1;return{x:left.x*sign,y:left.y*sign}}
-function makeTriangle(a,b,c,edge=null,flip=false){if(![a,b,c].every(v=>Number.isFinite(v)&&v>0))throw Error("すべての辺に0より大きい数値を入力してください。");if(a+b<=c||a+c<=b||b+c<=a)throw Error("この3辺では三角形が成立しません。");let p0={x:0,y:0},p1={x:c,y:0},normal={x:0,y:-1};if(edge){p0={...edge.a};p1={...edge.b};normal=outwardNormal(edge,flip)}const u={x:(p1.x-p0.x)/c,y:(p1.y-p0.y)/c};const x=(b*b+c*c-a*a)/(2*c),h=Math.sqrt(Math.max(0,b*b-x*x));const apex={x:p0.x+u.x*x+normal.x*h,y:p0.y+u.y*x+normal.y*h};return{id:uid(),type:"triangle",points:[p0,p1,apex],area:Math.sqrt(((a+b+c)/2)*(((a+b+c)/2)-a)*(((a+b+c)/2)-b)*(((a+b+c)/2)-c)),dimensions:{a,b,c},alignment:null}}
-function makeTrapezoid(top,bottom,h,align,edge=null,flip=false){if(![top,bottom,h].every(v=>Number.isFinite(v)&&v>0))throw Error("上底・下底・高さに0より大きい数値を入力してください。");let p0={x:0,y:0},p1={x:bottom,y:0},normal={x:0,y:-1};if(edge){p0={...edge.a};p1={...edge.b};normal=outwardNormal(edge,flip);bottom=dist(p0,p1)}const u={x:(p1.x-p0.x)/bottom,y:(p1.y-p0.y)/bottom};const offset=align==="left"?0:align==="right"?bottom-top:(bottom-top)/2;const q0={x:p0.x+u.x*offset+normal.x*h,y:p0.y+u.y*offset+normal.y*h};const q1={x:q0.x+u.x*top,y:q0.y+u.y*top};return{id:uid(),type:"trapezoid",points:[p0,p1,q1,q0],area:(top+bottom)*h/2,dimensions:{top,bottom,height:h},alignment:align}}
-function loadRecords(){try{const v=JSON.parse(localStorage.getItem(STORAGE_KEY)||"[]");if(Array.isArray(v))return v}catch{}return[]}
-function persist(){localStorage.setItem(STORAGE_KEY,JSON.stringify(state.records))}
-function total(){return state.shapes.reduce((s,v)=>s+Number(v.area),0)}
-function color(i){return["#dce879","#a9d8c3","#f2c98b","#bfc9eb","#e6b8c5","#c9df9c"][i%6]}
-function fitView(){if(!state.shapes.length){state.viewBox="0 0 700 430";return}const pts=state.shapes.flatMap(s=>s.points),xs=pts.map(p=>p.x),ys=pts.map(p=>p.y);let minX=Math.min(...xs),maxX=Math.max(...xs),minY=Math.min(...ys),maxY=Math.max(...ys);const w=Math.max(maxX-minX,1),h=Math.max(maxY-minY,1),pad=Math.max(w,h)*.22;state.viewBox=`${minX-pad} ${minY-pad} ${w+pad*2} ${h+pad*2}`}
-function renderCanvas(autoFit=false){if(autoFit)fitView();const svg=$("drawingCanvas");svg.setAttribute("viewBox",state.viewBox);if(!state.shapes.length){svg.innerHTML='<text x="350" y="205" text-anchor="middle" fill="#829189" font-size="18">ここに連続図面が表示されます</text><text x="350" y="235" text-anchor="middle" fill="#9aa69f" font-size="12">寸法を入力して最初の図形を追加</text>';return}const vb=state.viewBox.split(/\s+/).map(Number),scale=Math.max(vb[2],vb[3]),labelSize=scale*.045,edgeSize=scale*.025,labelOffset=scale*.012,halo=scale*.006;const free=freeEdges(),selected=state.selectedEdge;let html="";state.shapes.forEach((s,i)=>{const pts=s.points.map(p=>`${p.x},${p.y}`).join(" "),c=centroid(s.points);html+=`<polygon class="shape-polygon" points="${pts}" fill="${color(i)}" fill-opacity=".78"/><text class="shape-label" style="font-size:${labelSize}px" x="${c.x}" y="${c.y}">${i+1}</text>`;shapeEdges(s).forEach(e=>{const m=midpoint(e.a,e.b);html+=`<text class="edge-length" style="font-size:${edgeSize}px;stroke-width:${halo}px" x="${m.x}" y="${m.y-labelOffset}">${dist(e.a,e.b).toFixed(2)}m</text>`})});free.forEach(e=>{const key=`${e.shapeId}:${e.index}`;html+=`<line class="edge-line ${selected===key?"selected":""}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/><line class="edge-hit" data-edge="${key}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/>`});svg.innerHTML=html}
-function refreshEdgeOptions(){const edges=freeEdges(),old=state.selectedEdge;if(!edges.length){state.selectedEdge=null;return}if(!edges.some(e=>`${e.shapeId}:${e.index}`===old))state.selectedEdge=`${edges[0].shapeId}:${edges[0].index}`;$("edgeSelect").innerHTML=edges.map(e=>{const si=state.shapes.findIndex(s=>s.id===e.shapeId)+1,key=`${e.shapeId}:${e.index}`;return`<option value="${key}" ${key===state.selectedEdge?"selected":""}>図形 ${si}・辺 ${e.index+1}（${dist(e.a,e.b).toFixed(3)} m）</option>`}).join("");applySharedLength()}
-function applySharedLength(){const edge=edgeByKey(state.selectedEdge);if(!edge)return;const l=dist(edge.a,edge.b);$("sideC").value=l.toFixed(6);$("bottomBase").value=l.toFixed(6)}
-function renderParts(){$("partsSection").classList.toggle("hidden",!state.shapes.length);$("partsList").innerHTML=state.shapes.map((s,i)=>`<div class="part-row"><span class="part-number">${i+1}</span><div><strong>${s.type==="triangle"?"三角形":"台形"}${s.type==="trapezoid"?`・${{left:"左",center:"中央",right:"右"}[s.alignment]}揃え`:""}</strong><small>${dimensionText(s)}</small></div><div class="part-area">${fmt(s.area)} m²</div></div>`).join("")}
-function dimensionText(s){const d=s.dimensions;return s.type==="triangle"?`a ${d.a}m / b ${d.b}m / c ${d.c}m`:`上底 ${d.top}m / 下底 ${d.bottom}m / 高さ ${d.height}m`}
-function refresh(){const has=state.shapes.length>0;$("connectionPanel").classList.toggle("hidden",!has);$("flipField").classList.toggle("hidden",!has);$("stepNumber").textContent=has?"2":"1";$("sideC").readOnly=has;$("bottomBase").readOnly=has;$("sideCLabel").textContent=has?"接続辺 c":"辺 c";$("bottomBaseLabel").textContent=has?"接続辺（下底）":"下底";$("shapeCount").textContent=state.shapes.length;$("drawingTotal").textContent=fmt(total());$("printButton").disabled=!has;$("canvasHint").textContent=has?"緑色の外周辺をタップして次の接続先を選択":"最初の図形を追加してください";refreshEdgeOptions();renderCanvas(true);renderParts()}
-function clearInputs(){["sideA","sideB","sideC","topBase","bottomBase","height"].forEach(id=>$(id).value="");$("flipDirection").checked=false;document.querySelector('input[name="alignment"][value="center"]').checked=true;$("message").textContent="";applySharedLength()}
-function setMode(mode){state.mode=mode;document.querySelectorAll(".mode").forEach(b=>{const on=b.dataset.mode===mode;b.classList.toggle("active",on);b.setAttribute("aria-checked",String(on))});$("triangleFields").classList.toggle("hidden",mode!=="triangle");$("trapezoidFields").classList.toggle("hidden",mode!=="trapezoid");clearInputs()}
-function addShape(){try{const edge=state.shapes.length?edgeByKey(state.selectedEdge):null;if(state.shapes.length&&!edge)throw Error("接続する辺を選択してください。");const flip=$("flipDirection").checked;let shape;if(state.mode==="triangle"){shape=makeTriangle(num("sideA"),num("sideB"),edge?dist(edge.a,edge.b):num("sideC"),edge,flip)}else{shape=makeTrapezoid(num("topBase"),edge?dist(edge.a,edge.b):num("bottomBase"),num("height"),alignment(),edge,flip)}state.shapes.push(shape);clearInputs();refresh();showToast(`図形 ${state.shapes.length} を追加しました`)}catch(e){$("message").textContent=e.message}}
-function resetDrawing(){state.shapes=[];state.selectedEdge=null;state.recordId=null;$("name").value="";$("date").value=today();$("memo").value="";$("saveDrawingButton").textContent="図面を保存";setMode("triangle");refresh()}
-function ask(title,text,action){state.confirmAction=action;$("confirmTitle").textContent=title;$("confirmText").textContent=text;$("confirmDialog").showModal()}
-function saveDrawing(){const name=$("name").value.trim();if(!name){showToast("名称・測点名を入力してください");$("name").focus();return}if(!state.shapes.length){showToast("図形を1つ以上追加してください");return}const now=new Date().toISOString(),record={id:state.recordId||uid(),name,date:$("date").value||today(),memo:$("memo").value.trim(),shapes:structuredClone(state.shapes),total:total(),createdAt:now,updatedAt:now};const i=state.records.findIndex(r=>r.id===record.id);if(i>=0){record.createdAt=state.records[i].createdAt;state.records[i]=record}else state.records.unshift(record);state.recordId=record.id;persist();renderHistory();$("saveDrawingButton").textContent="変更を保存";showToast(i>=0?"図面を更新しました":"図面を保存しました")}
-function editRecord(id){const r=state.records.find(x=>x.id===id);if(!r)return;state.recordId=r.id;state.shapes=structuredClone(r.shapes);$("name").value=r.name;$("date").value=r.date;$("memo").value=r.memo||"";$("saveDrawingButton").textContent="変更を保存";refresh();switchView("drawing")}
-function renderHistory(){$("historyCount").textContent=state.records.length;$("emptyState").classList.toggle("hidden",state.records.length>0);$("historyList").innerHTML=state.records.map(r=>`<article class="record"><div class="record-main"><button type="button" data-edit="${r.id}"><div class="record-name">${esc(r.name)}</div><div class="record-meta">${esc(r.date)} ｜ ${r.shapes.length}図形${r.memo?`<br>${esc(r.memo)}`:""}</div></button></div><div><div class="record-area">${fmt(r.total)} <small>m²</small></div><div class="history-buttons"><button type="button" data-pdf="${r.id}">PDF</button><button type="button" data-edit="${r.id}">編集</button><button type="button" class="delete" data-delete="${r.id}">削除</button></div></div></article>`).join("")}
-function switchView(view){document.querySelectorAll(".tab").forEach(b=>b.classList.toggle("active",b.dataset.view===view));$("drawingView").classList.toggle("active",view==="drawing");$("historyView").classList.toggle("active",view==="history");if(view==="history")renderHistory();window.scrollTo({top:0,behavior:"smooth"})}
-function printRecord(record=null){const r=record||{name:$("name").value.trim()||"未保存の図面",date:$("date").value||today(),memo:$("memo").value.trim(),shapes:state.shapes,total:total()};if(!r.shapes.length)return;const oldShapes=state.shapes,oldEdge=state.selectedEdge,oldVB=state.viewBox;state.shapes=r.shapes;state.selectedEdge=null;fitView();renderCanvas(false);const svg=$("drawingCanvas").outerHTML.replace('id="drawingCanvas"','class="print-svg"');state.shapes=oldShapes;state.selectedEdge=oldEdge;state.viewBox=oldVB;renderCanvas(false);$("printSheet").innerHTML=`<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table><thead><tr><th>No.</th><th>図形</th><th>寸法</th><th>面積</th></tr></thead><tbody>${r.shapes.map((s,i)=>`<tr><td>${i+1}</td><td>${s.type==="triangle"?"三角形":"台形"}</td><td>${esc(dimensionText(s))}</td><td>${fmt(s.area)} m²</td></tr>`).join("")}</tbody></table><div class="print-total">合計面積 ${fmt(r.total)} m²</div>${r.memo?`<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>`:""}<footer>現場面積ノート</footer>`;window.print()}
-function download(name,content,type){const blob=new Blob([content],{type}),url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),500)}function csvCell(v){return`"${String(v??"").replace(/"/g,'""')}"`}
-function exportCsv(){if(!state.records.length)return showToast("出力する記録がありません");const head=["名称・測点名","日付","図形数","合計面積(m²)","メモ"],rows=state.records.map(r=>[r.name,r.date,r.shapes.length,r.total,r.memo].map(csvCell).join(","));download(`現場面積_${today()}.csv`,"\uFEFF"+[head.map(csvCell).join(","),...rows].join("\r\n"),"text/csv;charset=utf-8")}
-function exportJson(){download(`現場面積バックアップ_${today()}.json`,JSON.stringify({app:"現場面積ノート",version:2,exportedAt:new Date().toISOString(),records:state.records},null,2),"application/json")}
-async function importJson(file){try{const data=JSON.parse(await file.text());if(!data||!Array.isArray(data.records)||!data.records.every(r=>r.id&&r.name&&Array.isArray(r.shapes)))throw Error();const map=new Map(state.records.map(r=>[r.id,r]));data.records.forEach(r=>map.set(r.id,r));state.records=[...map.values()].sort((a,b)=>String(b.updatedAt).localeCompare(String(a.updatedAt)));persist();renderHistory();showToast(`${data.records.length}件を復元しました`)}catch{showToast("このバックアップは読み込めません")}finally{$("importJsonInput").value=""}}
-function showToast(text){const t=$("toast");t.textContent=text;t.classList.add("show");clearTimeout(showToast.timer);showToast.timer=setTimeout(()=>t.classList.remove("show"),2200)}
+const STORAGE_KEY = "field-area-drawings-v2", SETTINGS_KEY = "field-area-settings-v1";
+const THIN_ANGLE_DEG = 20; // これより小さい角を持つ三角形は警告する
+const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true };
+const $ = id => document.getElementById(id);
+const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, deferredInstall: null, viewBox: "0 0 700 430", wakeLock: null, wakeLockPending: false };
+const FIELD_LABELS = { sideA: "a", sideB: "b", sideC: "c", topBase: "上底", bottomBase: "下底", height: "高さ" };
+const DIMENSION_FIELDS = Object.keys(FIELD_LABELS);
+const mobileDevice = /Android|iPad|iPhone|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 0;
 
-const SpeechRecognitionClass=window.SpeechRecognition;
-const offlineSpeechSupported=!!(SpeechRecognitionClass&&typeof SpeechRecognitionClass.available==="function"&&typeof SpeechRecognitionClass.install==="function");
-const iOSKeyboardDictation=/iPad|iPhone|iPod/.test(navigator.userAgent)||(navigator.platform==="MacIntel"&&navigator.maxTouchPoints>1);
-const mobileKeyboardDictation=/Android|iPad|iPhone|iPod/i.test(navigator.userAgent)||navigator.maxTouchPoints>0;
-const VOICE_FIELDS=[
-  {id:"name",label:"名称・測点名",type:"text"},
-  {id:"sideA",label:"辺 a",type:"number"},{id:"sideB",label:"辺 b",type:"number"},{id:"sideC",label:"辺 c",type:"number"},
-  {id:"topBase",label:"上底",type:"number"},{id:"bottomBase",label:"下底",type:"number"},{id:"height",label:"高さ",type:"number"},
-  {id:"memo",label:"現場メモ",type:"text"}
-];
-let voiceRecognition=null,voiceTarget=null,voiceDefinition=null,voiceHandled=false,offlineSpeechReady=false;
-function parseSpokenMeasurement(text){
-  let s=String(text||"").normalize("NFKC").toLowerCase().replace(/[、，]/g,",").replace(/[。．]/g,".").replace(/てん/g,"点").trim();
-  const unit=s.match(/(-?\d+(?:\.\d+)?)\s*(?:m|メートル)(?:\s*(\d+(?:\.\d+)?)\s*(?:cm|センチ(?:メートル)?))?/i);
-  if(unit){const meters=Number(unit[1]),centimeters=unit[2]===undefined?0:Number(unit[2]);if(Number.isFinite(meters)&&Number.isFinite(centimeters))return Number((meters+centimeters/100).toFixed(6))}
-  s=s.replace(/[点]/g,".").replace(/(?:メートル|m|センチメートル|センチ|cm)/gi,"").replace(/,/g,"");
-  const match=s.match(/-?\d+(?:\.\d+)?/);if(!match)return null;const value=Number(match[0]);return Number.isFinite(value)?value:null
+// ---------- 共通 ----------
+function today() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
+function esc(v) { return String(v ?? "").replace(/[&<>'"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c])); }
+function num(id) { return parseLength($(id).value); }
+function fmtLen(v) { return String(Number(Number(v).toFixed(3))); }
+function fmt(v) { const d = state.settings.digits; return Number(v).toLocaleString("ja-JP", { minimumFractionDigits: d, maximumFractionDigits: d }); }
+function roundArea(v) {
+  const f = 10 ** state.settings.digits, x = Number(v) * f;
+  const r = state.settings.method === "floor" ? Math.floor(x + 1e-7) : state.settings.method === "ceil" ? Math.ceil(x - 1e-7) : Math.round(x + 1e-7);
+  return r / f;
 }
-function voiceErrorMessage(code){return({"not-allowed":"マイクの使用が許可されていません。ブラウザの設定でマイクを許可してください。","service-not-allowed":"この端末では端末内音声認識を利用できません。","language-not-supported":"日本語のオフライン音声パックが準備されていません。","no-speech":"音声を聞き取れませんでした。もう一度お試しください。","audio-capture":"マイクを使用できません。","network":"オフライン音声パックを利用できませんでした。"})[code]||"音声入力を開始できませんでした。"}
-function setListening(on){document.querySelectorAll(".voice-button").forEach(b=>b.classList.toggle("listening",on&&b.dataset.voiceTarget===voiceTarget?.id));let indicator=document.querySelector(".voice-listening");if(on&&!indicator){indicator=document.createElement("div");indicator.className="voice-listening";indicator.textContent="聞き取り中… 話してください";document.body.appendChild(indicator)}if(!on&&indicator)indicator.remove()}
-function stopVoiceRecognition(){if(voiceRecognition){voiceRecognition.onend=null;voiceRecognition.onerror=null;try{voiceRecognition.abort()}catch{}voiceRecognition=null}setListening(false)}
-function showVoicePreview(transcript){
-  $("voiceTranscript").textContent=transcript;$("voiceDialogTitle").textContent=`${voiceDefinition.label}の確認`;$("voiceMessage").textContent="";
-  if(voiceDefinition.type==="number"){const value=parseSpokenMeasurement(transcript);$("voiceValueLabel").textContent="入力する数値（m）";$("voiceValue").inputMode="decimal";$("voiceValue").value=value===null?"":String(value);if(value===null)$("voiceMessage").textContent="数値を認識できませんでした。手直しするか、もう一度お試しください。"}
-  else{$("voiceValueLabel").textContent="入力する内容";$("voiceValue").inputMode="text";$("voiceValue").value=transcript}
-  $("voiceDialog").showModal();setTimeout(()=>$("voiceValue").focus(),50)
+function computeTotal(shapes) {
+  if (state.settings.sumMode === "each") return Number(shapes.reduce((s, v) => s + roundArea(v.area), 0).toFixed(state.settings.digits));
+  return roundArea(shapes.reduce((s, v) => s + Number(v.area), 0));
 }
-function startVoiceInput(target,definition){
-  if(!offlineSpeechSupported||!window.isSecureContext){showToast("この端末ではオフライン音声入力を利用できません");return}if(!offlineSpeechReady){showToast("先にオフライン音声を準備してください");return}stopVoiceRecognition();voiceTarget=target;voiceDefinition=definition;voiceHandled=false;
-  const recognition=new SpeechRecognitionClass();voiceRecognition=recognition;recognition.lang="ja-JP";recognition.processLocally=true;recognition.continuous=false;recognition.interimResults=false;recognition.maxAlternatives=1;
-  recognition.onresult=e=>{voiceHandled=true;const transcript=Array.from(e.results).map(r=>r[0].transcript).join(" ").trim();setListening(false);voiceRecognition=null;if(transcript)showVoicePreview(transcript);else showToast("音声を聞き取れませんでした")};
-  recognition.onerror=e=>{voiceHandled=true;setListening(false);voiceRecognition=null;showToast(voiceErrorMessage(e.error))};
-  recognition.onend=()=>{setListening(false);voiceRecognition=null;if(!voiceHandled)showToast("音声を聞き取れませんでした")};
-  try{recognition.start();setListening(true)}catch{voiceRecognition=null;setListening(false);showToast("音声入力を開始できませんでした")}
+function roundingNote() {
+  const method = { round: "四捨五入", floor: "切り捨て", ceil: "切り上げ" }[state.settings.method];
+  return `面積は小数第${state.settings.digits}位まで（${method}・${state.settings.sumMode === "each" ? "図形ごとに丸めて合計" : "合計してから丸め"}）`;
 }
-function syncVoiceButtons(){document.querySelectorAll(".voice-button").forEach(button=>{const target=$(button.dataset.voiceTarget);button.hidden=!mobileKeyboardDictation;button.disabled=!!target?.readOnly;button.textContent="🎙"})}
-function updateOfflineSpeechUi(status){const help=$("voiceHelp"),setup=$("offlineSpeechSetup");if(!help||!setup)return;help.classList.toggle("unsupported",!iOSKeyboardDictation&&(status==="unsupported"||status==="unavailable"||status==="error"));setup.hidden=true;setup.disabled=false;setup.dataset.action="check";if(status==="available"){offlineSpeechReady=true;help.querySelector("span").textContent="🎙️ オフライン音声入力を使用できます。認識結果を確認してから反映します。"}else if(status==="downloadable"){offlineSpeechReady=false;help.querySelector("span").textContent="初回のみ、日本語のオフライン音声パックをダウンロードしてください。";setup.textContent="オフライン音声を準備";setup.dataset.action="install";setup.hidden=false}else if(status==="downloading"){offlineSpeechReady=false;help.querySelector("span").textContent="日本語の音声パックをダウンロードしています。完了後に再確認してください。";setup.textContent="状態を再確認";setup.hidden=false}else if(iOSKeyboardDictation){offlineSpeechReady=false;help.querySelector("span").textContent="iPhoneでは⌨️を押して入力欄を開き、キーボードのマイクを押してください。"}else if(status==="unavailable"){offlineSpeechReady=false;help.querySelector("span").textContent="この端末では日本語のオフライン音声入力を利用できません。手入力をご利用ください。"}else if(status==="checking"){offlineSpeechReady=false;help.querySelector("span").textContent="オフライン音声入力を確認しています…"}else if(status==="error"){offlineSpeechReady=false;help.querySelector("span").textContent="オフライン音声の状態を確認できませんでした。";setup.textContent="状態を再確認";setup.hidden=false}else{offlineSpeechReady=false;help.querySelector("span").textContent="この端末・ブラウザはオフライン音声入力に対応していません。手入力をご利用ください。"}syncVoiceButtons()}
-function startIOSKeyboardDictation(target){target.focus();try{target.setSelectionRange(target.value.length,target.value.length)}catch{}target.scrollIntoView({behavior:"smooth",block:"center"});showToast("iPhoneキーボードのマイクを押してください")}
-function startMobileKeyboardDictation(target){target.focus();try{target.setSelectionRange(target.value.length,target.value.length)}catch{}target.scrollIntoView({behavior:"smooth",block:"center"});showToast("スマホキーボードのマイクを押してください")}
-async function checkOfflineSpeech(){if(!offlineSpeechSupported||!window.isSecureContext){updateOfflineSpeechUi("unsupported");return}updateOfflineSpeechUi("checking");try{const status=await SpeechRecognitionClass.available({langs:["ja-JP"],processLocally:true});updateOfflineSpeechUi(status)}catch{updateOfflineSpeechUi("error")}}
-async function installOfflineSpeech(){const button=$("offlineSpeechSetup");button.disabled=true;button.textContent="ダウンロード中…";try{const installed=await SpeechRecognitionClass.install({langs:["ja-JP"],processLocally:true});if(installed){await checkOfflineSpeech();showToast(offlineSpeechReady?"オフライン音声の準備が完了しました":"音声パックを確認しています")}else{updateOfflineSpeechUi("error");showToast("日本語の音声パックをダウンロードできませんでした")}}catch{updateOfflineSpeechUi("error");showToast("通信できる場所で、もう一度準備してください")}}
-function setupVoiceInput(){
-  if(!mobileKeyboardDictation)return;const help=document.createElement("div");help.className="voice-help";help.textContent="🎙️ 入力欄のボタンを押し、スマホキーボードのマイクを押してください。";document.querySelector(".add-card .mode-switch").after(help);
-  VOICE_FIELDS.forEach(def=>{const target=$(def.id);if(!target)return;const holder=target.closest(".with-unit")||target.closest(".field");if(!holder||holder.querySelector(`[data-voice-target="${def.id}"]`))return;holder.classList.add("voice-field");const button=document.createElement("button");button.type="button";button.className="voice-button";button.dataset.voiceTarget=def.id;button.setAttribute("aria-label",`${def.label}をスマホの音声入力で入力`);button.title=`${def.label}を音声入力`;button.textContent="🎙";button.addEventListener("click",()=>{if(target.readOnly){showToast("接続辺の長さは図面から自動入力されます");return}startMobileKeyboardDictation(target)});holder.appendChild(button)});syncVoiceButtons()
+function designDiff(total, design) {
+  if (!(design > 0)) return null;
+  const diff = Number((total - design).toFixed(state.settings.digits));
+  return { diff, ratio: diff / design * 100 };
 }
-$("voiceCancelButton").addEventListener("click",()=>$("voiceDialog").close());
-$("voiceRetryButton").addEventListener("click",()=>{const target=voiceTarget,definition=voiceDefinition;$("voiceDialog").close();if(target&&definition)startVoiceInput(target,definition)});
-$("voiceApplyButton").addEventListener("click",()=>{if(!voiceTarget||!voiceDefinition)return;const value=$("voiceValue").value.trim();if(!value){$("voiceMessage").textContent="入力する内容を確認してください。";return}if(voiceDefinition.type==="number"){const number=Number(value);if(!Number.isFinite(number)||number<=0){$("voiceMessage").textContent="0より大きい数値を入力してください。";return}voiceTarget.value=String(number)}else voiceTarget.value=value;voiceTarget.dispatchEvent(new Event("input",{bubbles:true}));$("voiceDialog").close();voiceTarget.focus();showToast(`${voiceDefinition.label}に入力しました`)});
-$("voiceDialog").addEventListener("cancel",()=>stopVoiceRecognition());
-const refreshWithoutVoice=refresh;refresh=function(){refreshWithoutVoice();syncVoiceButtons()};
-setupVoiceInput();
-document.querySelectorAll(".mode").forEach(b=>b.addEventListener("click",()=>setMode(b.dataset.mode)));document.querySelectorAll(".tab").forEach(b=>b.addEventListener("click",()=>switchView(b.dataset.view)));$("edgeSelect").addEventListener("change",e=>{state.selectedEdge=e.target.value;applySharedLength();renderCanvas(false)});$("drawingCanvas").addEventListener("click",e=>{const hit=e.target.closest("[data-edge]");if(!hit)return;state.selectedEdge=hit.dataset.edge;refreshEdgeOptions();renderCanvas(false);showToast("接続辺を選択しました")});$("fitButton").addEventListener("click",()=>renderCanvas(true));$("addShapeButton").addEventListener("click",addShape);$("undoButton").addEventListener("click",()=>ask("最後の図形を戻しますか？","最後に追加した図形と、その接続を削除します。",()=>{state.shapes.pop();refresh();showToast("最後の図形を戻しました")}));$("newButton").addEventListener("click",()=>state.shapes.length?ask("新しい図面を作りますか？","未保存の変更は失われます。",resetDrawing):resetDrawing());$("saveDrawingButton").addEventListener("click",saveDrawing);$("printButton").addEventListener("click",()=>printRecord());
-$("historyList").addEventListener("click",e=>{const edit=e.target.closest("[data-edit]"),del=e.target.closest("[data-delete]"),pdf=e.target.closest("[data-pdf]");if(edit)editRecord(edit.dataset.edit);if(pdf){const r=state.records.find(x=>x.id===pdf.dataset.pdf);if(r)printRecord(r)}if(del)ask("図面を削除しますか？","削除した図面は元に戻せません。",()=>{state.records=state.records.filter(r=>r.id!==del.dataset.delete);persist();renderHistory();showToast("図面を削除しました")})});$("cancelConfirmButton").addEventListener("click",()=>$("confirmDialog").close());$("acceptConfirmButton").addEventListener("click",()=>{const fn=state.confirmAction;$("confirmDialog").close();state.confirmAction=null;if(fn)fn()});$("exportCsvButton").addEventListener("click",exportCsv);$("exportJsonButton").addEventListener("click",exportJson);$("importJsonInput").addEventListener("change",e=>e.target.files[0]&&importJson(e.target.files[0]));window.addEventListener("beforeinstallprompt",e=>{e.preventDefault();state.deferredInstall=e;$("installButton").classList.remove("hidden")});$("installButton").addEventListener("click",async()=>{if(!state.deferredInstall)return;state.deferredInstall.prompt();await state.deferredInstall.userChoice;state.deferredInstall=null;$("installButton").classList.add("hidden")});if("serviceWorker"in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("./service-worker.js"));$("date").value=today();refresh();renderHistory();
+function diffText(total, design) {
+  const d = designDiff(total, design); if (!d) return "";
+  const sign = d.diff > 0 ? "+" : d.diff < 0 ? "−" : "±";
+  return `${sign}${fmt(Math.abs(d.diff))} m²（${sign}${Math.abs(d.ratio).toFixed(2)}%）`;
+}
+
+// ---------- 幾何 ----------
+function dist(a, b) { return Math.hypot(b.x - a.x, b.y - a.y); }
+function midpoint(a, b) { return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }; }
+function samePoint(a, b, tol = 1e-6) { return dist(a, b) < tol; }
+function sameEdge(a, b, c, d) { return (samePoint(a, c) && samePoint(b, d)) || (samePoint(a, d) && samePoint(b, c)); }
+function signedArea(points) { let s = 0; for (let i = 0; i < points.length; i++) { const a = points[i], b = points[(i + 1) % points.length]; s += a.x * b.y - b.x * a.y; } return s / 2; }
+function polygonArea(points) { return Math.abs(signedArea(points)); }
+function centroid(points) { return { x: points.reduce((s, p) => s + p.x, 0) / points.length, y: points.reduce((s, p) => s + p.y, 0) / points.length }; }
+function alignment() { return document.querySelector('input[name="alignment"]:checked').value; }
+function edgeOf(shape, index) { return { shapeId: shape.id, index, a: shape.points[index], b: shape.points[(index + 1) % shape.points.length] }; }
+function shapeEdges(shape) { return shape.points.map((_, i) => edgeOf(shape, i)); }
+function edgeKey(e) { return `${e.shapeId}:${e.index}`; }
+function freeEdges(shapes = state.shapes) { const all = shapes.flatMap(shapeEdges); return all.filter((e, i) => !all.some((o, j) => j !== i && sameEdge(e.a, e.b, o.a, o.b))); }
+function edgeByKey(key) { return freeEdges().find(e => edgeKey(e) === key); }
+function outwardNormal(edge, shapes, flip = false) {
+  const dx = edge.b.x - edge.a.x, dy = edge.b.y - edge.a.y, l = Math.hypot(dx, dy), left = { x: -dy / l, y: dx / l };
+  const parent = shapes.find(s => s.id === edge.shapeId), c = centroid(parent.points);
+  const cross = dx * (c.y - edge.a.y) - dy * (c.x - edge.a.x);
+  let sign = cross > 0 ? -1 : 1; if (flip) sign *= -1;
+  return { x: left.x * sign, y: left.y * sign };
+}
+// 三角形: 接続辺(またはc)を p0→p1 とし、b は p0 側、a は p1 側の辺
+function makeTriangle(a, b, c, edge = null, shapes = state.shapes, flip = false) {
+  if (![a, b, c].every(v => Number.isFinite(v) && v > 0)) throw Error("すべての辺に0より大きい数値を入力してください。");
+  if (a + b <= c || a + c <= b || b + c <= a) throw Error("この3辺では三角形が成立しません。");
+  let p0 = { x: 0, y: 0 }, p1 = { x: c, y: 0 }, normal = { x: 0, y: -1 };
+  if (edge) { p0 = { ...edge.a }; p1 = { ...edge.b }; normal = outwardNormal(edge, shapes, flip); }
+  const u = { x: (p1.x - p0.x) / c, y: (p1.y - p0.y) / c };
+  const x = (b * b + c * c - a * a) / (2 * c), h = Math.sqrt(Math.max(0, b * b - x * x));
+  const apex = { x: p0.x + u.x * x + normal.x * h, y: p0.y + u.y * x + normal.y * h };
+  const s = (a + b + c) / 2;
+  return { id: uid(), type: "triangle", points: [p0, p1, apex], area: Math.sqrt(s * (s - a) * (s - b) * (s - c)), dimensions: { a, b, c }, alignment: null, parent: edge ? { shapeId: edge.shapeId, index: edge.index } : null, flip: !!flip };
+}
+function makeTrapezoid(top, bottom, h, align, edge = null, shapes = state.shapes, flip = false) {
+  if (![top, bottom, h].every(v => Number.isFinite(v) && v > 0)) throw Error("上底・下底・高さに0より大きい数値を入力してください。");
+  let p0 = { x: 0, y: 0 }, p1 = { x: bottom, y: 0 }, normal = { x: 0, y: -1 };
+  if (edge) { p0 = { ...edge.a }; p1 = { ...edge.b }; normal = outwardNormal(edge, shapes, flip); bottom = dist(p0, p1); }
+  const u = { x: (p1.x - p0.x) / bottom, y: (p1.y - p0.y) / bottom };
+  const offset = align === "left" ? 0 : align === "right" ? bottom - top : (bottom - top) / 2;
+  const q0 = { x: p0.x + u.x * offset + normal.x * h, y: p0.y + u.y * offset + normal.y * h };
+  const q1 = { x: q0.x + u.x * top, y: q0.y + u.y * top };
+  return { id: uid(), type: "trapezoid", points: [p0, p1, q1, q0], area: (top + bottom) * h / 2, dimensions: { top, bottom, height: h }, alignment: align, parent: edge ? { shapeId: edge.shapeId, index: edge.index } : null, flip: !!flip };
+}
+function buildShape(spec, edge, shapes) {
+  const d = spec.dimensions, base = edge ? dist(edge.a, edge.b) : null;
+  return spec.type === "triangle" ? makeTriangle(d.a, d.b, base ?? d.c, edge, shapes, spec.flip) : makeTrapezoid(d.top, base ?? d.bottom, d.height, spec.alignment, edge, shapes, spec.flip);
+}
+// 接続関係と寸法から図面全体を作り直す（途中の図形を修正したとき）
+function rebuildShapes(specs) {
+  const built = [];
+  specs.forEach((spec, i) => {
+    if (!spec.parent && i > 0) { built.push(structuredClone(spec)); return; }
+    let edge = null;
+    if (spec.parent) {
+      const parent = built.find(b => b.id === spec.parent.shapeId);
+      if (!parent) throw Error(`図形 ${i + 1} の接続先が見つかりません。`);
+      edge = edgeOf(parent, spec.parent.index);
+    }
+    let shape;
+    try { shape = buildShape(spec, edge, built); }
+    catch (e) { throw Error(`図形 ${i + 1} が成り立たなくなります：${e.message}`); }
+    shape.id = spec.id;
+    built.push(shape);
+  });
+  return built;
+}
+// v10 以前の記録には接続情報が無いので、点の一致から復元する
+function withConnections(shapes) {
+  const result = [];
+  shapes.forEach((s, i) => {
+    if ("parent" in s || i === 0) { result.push({ ...s, parent: s.parent ?? null, flip: !!s.flip }); return; }
+    let found = null;
+    for (const p of result) {
+      for (let k = 0; k < p.points.length && !found; k++) {
+        const e = edgeOf(p, k);
+        if (samePoint(e.a, s.points[0], 1e-4) && samePoint(e.b, s.points[1], 1e-4)) found = e;
+      }
+      if (found) break;
+    }
+    if (!found) { result.push({ ...s, parent: null, flip: false }); return; }
+    let flip = false;
+    try { const trial = buildShape({ ...s, flip: false }, found, result); flip = !samePoint(trial.points.at(-1), s.points.at(-1), 1e-4); } catch { }
+    result.push({ ...s, parent: { shapeId: found.shapeId, index: found.index }, flip });
+  });
+  return result;
+}
+function minAngle(shape) {
+  const { a, b, c } = shape.dimensions;
+  const ang = (x, y, z) => Math.acos(Math.min(1, Math.max(-1, (y * y + z * z - x * x) / (2 * y * z)))) * 180 / Math.PI;
+  return Math.min(ang(a, b, c), ang(b, a, c), ang(c, a, b));
+}
+function ccw(points) { return signedArea(points) < 0 ? [...points].reverse() : points; }
+// 凸多角形どうしの共通部分（Sutherland–Hodgman）
+function clipConvex(subject, clip) {
+  let out = ccw(subject); clip = ccw(clip);
+  for (let i = 0; i < clip.length && out.length; i++) {
+    const A = clip[i], B = clip[(i + 1) % clip.length], input = out; out = [];
+    const side = p => (B.x - A.x) * (p.y - A.y) - (B.y - A.y) * (p.x - A.x);
+    for (let j = 0; j < input.length; j++) {
+      const P = input[j], Q = input[(j + 1) % input.length], sp = side(P), sq = side(Q);
+      if (sp >= 0) out.push(P);
+      if ((sp >= 0) !== (sq >= 0)) { const t = sp / (sp - sq); out.push({ x: P.x + (Q.x - P.x) * t, y: P.y + (Q.y - P.y) * t }); }
+    }
+  }
+  return out;
+}
+function overlappingNumbers(shape, others) {
+  return others.filter(o => {
+    const inter = clipConvex(shape.points, o.points);
+    return inter.length >= 3 && polygonArea(inter) > Math.max(1e-4, Math.min(shape.area, o.area) * 0.005);
+  }).map(o => state.shapes.findIndex(s => s.id === o.id) + 1);
+}
+function vertexName(i) { let s = ""; i++; while (i > 0) { const r = (i - 1) % 26; s = String.fromCharCode(65 + r) + s; i = Math.floor((i - 1) / 26); } return s; }
+function vertexList(shapes) {
+  const list = [];
+  shapes.forEach(s => s.points.forEach(p => { if (!list.some(v => samePoint(v, p))) list.push({ x: p.x, y: p.y }); }));
+  return list.map((p, i) => ({ ...p, name: vertexName(i) }));
+}
+function vertexNameOf(p, vertices) { return vertices.find(v => samePoint(v, p))?.name || "?"; }
+function shapeVertexText(shape, vertices) { return shape.points.map(p => vertexNameOf(p, vertices)).join("-"); }
+
+// ---------- 保存・設定 ----------
+function loadRecords() { try { const v = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); if (Array.isArray(v)) return v; } catch { } return []; }
+function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.records)); }
+function loadSettings() { try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") }; } catch { return { ...DEFAULT_SETTINGS }; } }
+function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings)); } catch { } }
+
+// ---------- 図面 ----------
+function color(i) { return ["#dce879", "#a9d8c3", "#f2c98b", "#bfc9eb", "#e6b8c5", "#c9df9c"][i % 6]; }
+function viewBoxFor(points) {
+  if (!points.length) return "0 0 700 430";
+  const xs = points.map(p => p.x), ys = points.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs), minY = Math.min(...ys), maxY = Math.max(...ys);
+  const w = Math.max(maxX - minX, 1), h = Math.max(maxY - minY, 1), pad = Math.max(w, h) * .22;
+  return `${minX - pad} ${minY - pad} ${w + pad * 2} ${h + pad * 2}`;
+}
+function fitView() { const ghost = state.candidate?.shape; state.viewBox = viewBoxFor([...state.shapes, ...(ghost ? [ghost] : [])].flatMap(s => s.points)); }
+function svgMarkup(shapes, { viewBox, selectedEdge = null, ghost = null, interactive = false }) {
+  if (!shapes.length && !ghost) return '<text x="350" y="205" text-anchor="middle" fill="#829189" font-size="18">ここに連続図面が表示されます</text><text x="350" y="235" text-anchor="middle" fill="#9aa69f" font-size="12">寸法を入力して最初の図形を追加</text>';
+  const vb = viewBox.split(/\s+/).map(Number), scale = Math.max(vb[2], vb[3]);
+  const labelSize = scale * .045, edgeSize = scale * .025, labelOffset = scale * .012, halo = scale * .006, vertexSize = scale * .03;
+  const all = ghost ? [...shapes, ghost] : shapes, vertices = vertexList(all), center = centroid(all.flatMap(s => s.points));
+  let html = "";
+  const labeled = [];
+  shapes.forEach((s, i) => {
+    const c = centroid(s.points);
+    html += `<polygon class="shape-polygon" points="${s.points.map(p => `${p.x},${p.y}`).join(" ")}" fill="${color(i)}" fill-opacity=".78"/><text class="shape-label" style="font-size:${labelSize}px" x="${c.x}" y="${c.y}">${i + 1}</text>`;
+    shapeEdges(s).forEach(e => {
+      if (labeled.some(o => sameEdge(e.a, e.b, o.a, o.b))) return;
+      labeled.push(e);
+      const m = midpoint(e.a, e.b);
+      html += `<text class="edge-length" style="font-size:${edgeSize}px;stroke-width:${halo}px" x="${m.x}" y="${m.y - labelOffset}">${dist(e.a, e.b).toFixed(2)}m</text>`;
+    });
+  });
+  if (interactive) freeEdges(shapes).forEach(e => {
+    const key = edgeKey(e);
+    html += `<line class="edge-line ${selectedEdge === key ? "selected" : ""}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/><line class="edge-hit" data-edge="${key}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/>`;
+  });
+  if (ghost) {
+    const gc = centroid(ghost.points);
+    html += `<polygon class="ghost-polygon" points="${ghost.points.map(p => `${p.x},${p.y}`).join(" ")}"/>`;
+    const names = ghost.type === "triangle" ? ["c", "a", "b"] : ["下底", null, "上底", null];
+    shapeEdges(ghost).forEach((e, i) => {
+      if (!names[i] || (i === 0 && ghost.parent)) return; // 接続辺は既存の長さ表示と重なるので出さない
+      const m = midpoint(e.a, e.b), dx = m.x - gc.x, dy = m.y - gc.y, l = Math.hypot(dx, dy) || 1;
+      html += `<text class="ghost-label" style="font-size:${edgeSize * 1.15}px;stroke-width:${halo}px" x="${m.x + dx / l * edgeSize * 1.6}" y="${m.y + dy / l * edgeSize * 1.6}">${names[i]} ${fmtLen(dist(e.a, e.b))}</text>`;
+    });
+  }
+  vertices.forEach(v => {
+    const dx = v.x - center.x, dy = v.y - center.y, l = Math.hypot(dx, dy) || 1;
+    html += `<circle class="vertex-dot" cx="${v.x}" cy="${v.y}" r="${scale * .006}"/><text class="vertex-label" style="font-size:${vertexSize}px;stroke-width:${halo}px" x="${v.x + dx / l * vertexSize}" y="${v.y + dy / l * vertexSize}">${v.name}</text>`;
+  });
+  return html;
+}
+function renderCanvas(autoFit = false) {
+  if (autoFit) fitView();
+  const svg = $("drawingCanvas");
+  svg.setAttribute("viewBox", state.viewBox);
+  svg.innerHTML = svgMarkup(state.shapes, { viewBox: state.viewBox, selectedEdge: state.editingId ? null : state.selectedEdge, ghost: state.candidate?.shape, interactive: !state.editingId });
+}
+
+// ---------- 入力フォーム ----------
+function editingShape() { return state.editingId ? state.shapes.find(s => s.id === state.editingId) : null; }
+function baseLocked() { const editing = editingShape(); return editing ? !!editing.parent : state.shapes.length > 0; }
+function lockedEdge() {
+  const editing = editingShape();
+  if (editing) { if (!editing.parent) return null; const p = state.shapes.find(s => s.id === editing.parent.shapeId); return p ? edgeOf(p, editing.parent.index) : null; }
+  return state.shapes.length ? edgeByKey(state.selectedEdge) : null;
+}
+function refreshEdgeOptions() {
+  const edges = freeEdges(), vertices = vertexList(state.shapes);
+  if (!edges.length) { state.selectedEdge = null; $("edgeSelect").innerHTML = ""; return; }
+  if (!edges.some(e => edgeKey(e) === state.selectedEdge)) state.selectedEdge = edgeKey(edges[0]);
+  $("edgeSelect").innerHTML = edges.map(e => {
+    const si = state.shapes.findIndex(s => s.id === e.shapeId) + 1, key = edgeKey(e);
+    return `<option value="${key}" ${key === state.selectedEdge ? "selected" : ""}>${vertexNameOf(e.a, vertices)}–${vertexNameOf(e.b, vertices)}（${dist(e.a, e.b).toFixed(3)} m）・図形 ${si}</option>`;
+  }).join("");
+}
+function applySharedLength() {
+  const edge = lockedEdge(); if (!edge || !baseLocked()) return;
+  const l = fmtLen(dist(edge.a, edge.b));
+  $("sideC").value = l; $("bottomBase").value = l;
+}
+function requiredFields() { return state.mode === "triangle" ? ["sideA", "sideB", "sideC"] : ["topBase", "bottomBase", "height"]; }
+function quickTargets() { const locked = baseLocked(); return state.mode === "triangle" ? (locked ? ["sideA", "sideB"] : ["sideA", "sideB", "sideC"]) : (locked ? ["topBase", "height"] : ["topBase", "bottomBase", "height"]); }
+function updateQuickHint() {
+  const targets = quickTargets().map(id => FIELD_LABELS[id]);
+  $("quickHint").textContent = `${targets.join("・")} の順に${targets.length}つ${baseLocked() ? `（${state.mode === "triangle" ? "c" : "下底"}は接続辺）` : ""}`;
+  $("quickInput").placeholder = targets.length === 2 ? "例：4.25 3.01" : "例：3.01 4.25 3";
+}
+function applyQuickInput() {
+  const text = $("quickInput").value, targets = quickTargets();
+  if (!text.trim()) { $("quickParsed").innerHTML = ""; updatePreview(); return; }
+  const values = parseLengths(text);
+  targets.forEach((id, i) => { $(id).value = values[i] !== undefined ? fmtLen(values[i]) : ""; });
+  const chips = targets.map((id, i) => `<span class="chip ${values[i] === undefined ? "empty" : ""}">${FIELD_LABELS[id]} ${values[i] !== undefined ? fmtLen(values[i]) : "—"}</span>`).join("");
+  let status;
+  if (values.length < targets.length) status = `<span class="quick-status">あと${targets.length - values.length}つ</span>`;
+  else if (values.length > targets.length) status = `<span class="quick-status warn">数が${values.length}個あります。最初の${targets.length}個を使います</span>`;
+  else status = `<span class="quick-status ok">✓ そろいました（キーボードの完了・改行で追加）</span>`;
+  $("quickParsed").innerHTML = chips + status;
+  updatePreview();
+}
+function buildCandidate() {
+  const editing = editingShape(), edge = lockedEdge(), flip = $("flipDirection").checked;
+  if (!editing && state.shapes.length && !edge) throw Error("接続する辺を選択してください。");
+  const spec = state.mode === "triangle"
+    ? { type: "triangle", dimensions: { a: num("sideA"), b: num("sideB"), c: num("sideC") }, flip }
+    : { type: "trapezoid", dimensions: { top: num("topBase"), bottom: num("bottomBase"), height: num("height") }, alignment: alignment(), flip };
+  const shape = buildShape(spec, edge, state.shapes);
+  const warnings = [];
+  let rebuilt = null;
+  if (editing) {
+    shape.id = editing.id;
+    rebuilt = rebuildShapes(state.shapes.map(s => s.id === editing.id ? shape : s));
+  }
+  if (shape.type === "triangle") {
+    const m = minAngle(shape);
+    if (m < THIN_ANGLE_DEG) warnings.push(`最小角が ${m.toFixed(1)}° の細長い三角形です。テープの数cmの誤差が面積に大きく響くため、分け方の見直しや再計測を検討してください。`);
+  }
+  const hits = overlappingNumbers(shape, state.shapes.filter(s => s.id !== editing?.id));
+  if (hits.length) warnings.push(`図形 ${hits.join("・")} と重なっています。「接続方向を反転する」や a・b の入れ替えを確認してください。`);
+  return { shape, warnings, overlap: hits.length > 0, rebuilt };
+}
+function updatePreview() {
+  const box = $("previewBox"), filled = requiredFields().every(id => $(id).value.trim() !== "");
+  state.candidate = null;
+  if (!filled) {
+    box.className = "preview-box idle";
+    box.textContent = "寸法を入れると、ここに面積が、図面に点線で追加位置が表示されます。";
+  } else {
+    try {
+      const cand = buildCandidate(); state.candidate = cand;
+      const editing = editingShape();
+      const after = cand.rebuilt ? computeTotal(cand.rebuilt) : computeTotal([...state.shapes, cand.shape]);
+      box.className = `preview-box${cand.warnings.length ? " has-warning" : ""}`;
+      box.innerHTML = `<div class="preview-line"><span>${editing ? "修正後の図形" : "この図形"} <b>${fmt(roundArea(cand.shape.area))}</b> m²</span><span>${editing ? "修正後の合計" : "追加後の合計"} <b>${fmt(after)}</b> m²</span></div>${cand.warnings.map(w => `<p class="warn">⚠ ${esc(w)}</p>`).join("")}`;
+    } catch (e) {
+      box.className = "preview-box error";
+      box.textContent = e.message;
+    }
+  }
+  renderCanvas(true);
+}
+function clearInputs() {
+  DIMENSION_FIELDS.forEach(id => $(id).value = "");
+  $("quickInput").value = ""; $("quickParsed").innerHTML = "";
+  $("flipDirection").checked = false;
+  document.querySelector('input[name="alignment"][value="center"]').checked = true;
+  $("message").textContent = "";
+  applySharedLength();
+}
+function setMode(mode) {
+  state.mode = mode;
+  document.querySelectorAll(".mode").forEach(b => { const on = b.dataset.mode === mode; b.classList.toggle("active", on); b.setAttribute("aria-checked", String(on)); });
+  $("triangleFields").classList.toggle("hidden", mode !== "triangle");
+  $("trapezoidFields").classList.toggle("hidden", mode !== "trapezoid");
+  clearInputs(); updateQuickHint(); updatePreview();
+}
+function swapAB() {
+  const a = $("sideA").value; $("sideA").value = $("sideB").value; $("sideB").value = a;
+  updatePreview(); showToast("a と b を入れ替えました");
+}
+
+// ---------- 図形の追加・修正 ----------
+function addShape() {
+  let cand;
+  try { cand = buildCandidate(); } catch (e) { $("message").textContent = e.message; return; }
+  const editing = editingShape();
+  const commit = () => {
+    if (editing) {
+      const n = state.shapes.findIndex(s => s.id === editing.id) + 1;
+      state.shapes = cand.rebuilt; state.editingId = null;
+      clearInputs(); refresh(); showToast(`図形 ${n} を修正しました`);
+    } else {
+      state.shapes.push(cand.shape);
+      const next = freeEdges().find(e => e.shapeId === cand.shape.id);
+      if (next) state.selectedEdge = edgeKey(next);
+      clearInputs(); refresh(); showToast(`図形 ${state.shapes.length} を追加しました`);
+    }
+    $("quickInput").blur();
+  };
+  if (cand.overlap) ask("図形が重なっています", `${cand.warnings.at(-1)}\nこのまま${editing ? "修正" : "追加"}しますか？`, commit, editing ? "修正する" : "追加する");
+  else commit();
+}
+function startEdit(id) {
+  const shape = state.shapes.find(s => s.id === id); if (!shape) return;
+  state.editingId = null; setMode(shape.type); state.editingId = id;
+  const d = shape.dimensions;
+  if (shape.type === "triangle") { $("sideA").value = fmtLen(d.a); $("sideB").value = fmtLen(d.b); $("sideC").value = fmtLen(d.c); }
+  else { $("topBase").value = fmtLen(d.top); $("bottomBase").value = fmtLen(d.bottom); $("height").value = fmtLen(d.height); document.querySelector(`input[name="alignment"][value="${shape.alignment}"]`).checked = true; }
+  $("flipDirection").checked = !!shape.flip;
+  refresh();
+  $("editBanner").scrollIntoView({ behavior: "smooth", block: "center" });
+}
+function cancelEdit() { state.editingId = null; clearInputs(); refresh(); }
+function refresh() {
+  const has = state.shapes.length > 0, editing = editingShape(), locked = baseLocked();
+  const editNo = editing ? state.shapes.indexOf(editing) + 1 : 0;
+  $("connectionPanel").classList.toggle("hidden", !has || !!editing);
+  $("flipField").classList.toggle("hidden", !locked);
+  $("stepNumber").textContent = has && !editing ? "2" : "1";
+  $("sideC").readOnly = locked; $("bottomBase").readOnly = locked;
+  $("sideCLabel").textContent = locked ? "接続辺 c" : "辺 c";
+  $("bottomBaseLabel").textContent = locked ? "接続辺（下底）" : "下底";
+  $("editBanner").classList.toggle("hidden", !editing);
+  $("editBannerText").textContent = editing ? `図形 ${editNo} を修正中` : "";
+  document.querySelectorAll(".mode").forEach(b => b.disabled = !!editing);
+  $("addShapeButton").textContent = editing ? `図形 ${editNo} を修正` : "この図形を追加";
+  $("undoButton").disabled = !!editing;
+  $("shapeCount").textContent = state.shapes.length;
+  $("printButton").disabled = !has;
+  $("canvasHint").textContent = editing ? "点線が修正後の位置です" : has ? "緑色の外周辺をタップして次の接続先を選択" : "最初の図形を追加してください";
+  refreshEdgeOptions(); applySharedLength(); updateQuickHint(); renderSummary(); renderParts();
+  if ($("quickInput").value.trim()) applyQuickInput(); else updatePreview();
+}
+function renderSummary() {
+  const total = computeTotal(state.shapes), design = num("designArea");
+  $("drawingTotal").textContent = fmt(total);
+  const d = designDiff(total, design);
+  $("designSummary").classList.toggle("hidden", !d);
+  if (d) $("designSummary").innerHTML = `設計 ${fmt(design)} m² ／ 差 <b class="${d.diff > 0 ? "plus" : d.diff < 0 ? "minus" : ""}">${diffText(total, design)}</b>`;
+}
+function renderParts() {
+  const vertices = vertexList(state.shapes);
+  $("partsSection").classList.toggle("hidden", !state.shapes.length);
+  $("partsList").innerHTML = state.shapes.map((s, i) => {
+    const thin = s.type === "triangle" && minAngle(s) < THIN_ANGLE_DEG;
+    return `<div class="part-row ${s.id === state.editingId ? "editing" : ""}"><span class="part-number">${i + 1}</span><div><strong>${s.type === "triangle" ? "三角形" : "台形"}${s.type === "trapezoid" ? `・${{ left: "左", center: "中央", right: "右" }[s.alignment]}揃え` : ""}（${shapeVertexText(s, vertices)}）</strong><small>${dimensionText(s)}</small>${thin ? `<small class="thin-badge">⚠ 最小角 ${minAngle(s).toFixed(1)}°</small>` : ""}</div><div class="part-area">${fmt(roundArea(s.area))} m²</div><button type="button" class="part-edit" data-edit-shape="${s.id}">修正</button></div>`;
+  }).join("");
+}
+function dimensionText(s) { const d = s.dimensions; return s.type === "triangle" ? `a ${fmtLen(d.a)}m / b ${fmtLen(d.b)}m / c ${fmtLen(d.c)}m` : `上底 ${fmtLen(d.top)}m / 下底 ${fmtLen(d.bottom)}m / 高さ ${fmtLen(d.height)}m`; }
+
+// ---------- 記録 ----------
+function resetDrawing() {
+  state.shapes = []; state.selectedEdge = null; state.recordId = null; state.editingId = null;
+  $("name").value = ""; $("date").value = today(); $("designArea").value = ""; $("memo").value = "";
+  $("saveDrawingButton").textContent = "図面を保存";
+  setMode("triangle"); refresh();
+}
+function ask(title, text, action, acceptLabel = "実行") {
+  state.confirmAction = action;
+  $("confirmTitle").textContent = title; $("confirmText").textContent = text; $("acceptConfirmButton").textContent = acceptLabel;
+  $("confirmDialog").showModal();
+}
+function saveDrawing() {
+  const name = $("name").value.trim();
+  if (!name) { showToast("名称・測点名を入力してください"); $("name").focus(); return; }
+  if (!state.shapes.length) { showToast("図形を1つ以上追加してください"); return; }
+  if (state.editingId) { showToast("図形の修正を確定するか、やめてから保存してください"); return; }
+  const now = new Date().toISOString(), design = num("designArea");
+  const record = { id: state.recordId || uid(), name, date: $("date").value || today(), designArea: design > 0 ? design : null, memo: $("memo").value.trim(), shapes: structuredClone(state.shapes), total: computeTotal(state.shapes), createdAt: now, updatedAt: now };
+  const i = state.records.findIndex(r => r.id === record.id);
+  if (i >= 0) { record.createdAt = state.records[i].createdAt; state.records[i] = record; } else state.records.unshift(record);
+  state.recordId = record.id; persist(); renderHistory();
+  $("saveDrawingButton").textContent = "変更を保存";
+  showToast(i >= 0 ? "図面を更新しました" : "図面を保存しました");
+}
+function editRecord(id) {
+  const r = state.records.find(x => x.id === id); if (!r) return;
+  state.recordId = r.id; state.editingId = null; state.shapes = withConnections(structuredClone(r.shapes));
+  $("name").value = r.name; $("date").value = r.date; $("designArea").value = r.designArea ? fmtLen(r.designArea) : ""; $("memo").value = r.memo || "";
+  $("saveDrawingButton").textContent = "変更を保存";
+  state.selectedEdge = null; clearInputs(); refresh(); switchView("drawing");
+}
+function renderHistory() {
+  $("historyCount").textContent = state.records.length;
+  $("emptyState").classList.toggle("hidden", state.records.length > 0);
+  $("historyList").innerHTML = state.records.map(r => {
+    const total = computeTotal(r.shapes), diff = diffText(total, r.designArea);
+    return `<article class="record"><div class="record-main"><button type="button" data-edit="${r.id}"><div class="record-name">${esc(r.name)}</div><div class="record-meta">${esc(r.date)} ｜ ${r.shapes.length}図形${diff ? `<br>設計比 ${diff}` : ""}${r.memo ? `<br>${esc(r.memo)}` : ""}</div></button></div><div><div class="record-area">${fmt(total)} <small>m²</small></div><div class="history-buttons"><button type="button" data-pdf="${r.id}">PDF</button><button type="button" data-edit="${r.id}">編集</button><button type="button" class="delete" data-delete="${r.id}">削除</button></div></div></article>`;
+  }).join("");
+}
+function switchView(view) {
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+  $("drawingView").classList.toggle("active", view === "drawing");
+  $("historyView").classList.toggle("active", view === "history");
+  if (view === "history") renderHistory();
+  window.scrollTo({ top: 0, behavior: "smooth" });
+}
+function printRecord(record = null) {
+  const design = num("designArea");
+  const r = record || { name: $("name").value.trim() || "未保存の図面", date: $("date").value || today(), designArea: design > 0 ? design : null, memo: $("memo").value.trim(), shapes: state.shapes };
+  if (!r.shapes.length) return;
+  const viewBox = viewBoxFor(r.shapes.flatMap(s => s.points)), vertices = vertexList(r.shapes), total = computeTotal(r.shapes), diff = diffText(total, r.designArea);
+  const svg = `<svg class="print-svg" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">${svgMarkup(r.shapes, { viewBox })}</svg>`;
+  $("printSheet").innerHTML = `<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table><thead><tr><th>No.</th><th>図形</th><th>頂点</th><th>寸法</th><th>面積</th></tr></thead><tbody>${r.shapes.map((s, i) => `<tr><td>${i + 1}</td><td>${s.type === "triangle" ? "三角形" : "台形"}</td><td>${shapeVertexText(s, vertices)}</td><td>${esc(dimensionText(s))}</td><td>${fmt(roundArea(s.area))} m²</td></tr>`).join("")}</tbody></table><div class="print-total">合計面積 ${fmt(total)} m²</div>${r.designArea ? `<div class="print-design">設計面積 ${fmt(r.designArea)} m² ／ 差 ${diff}</div>` : ""}<div class="print-rounding">${roundingNote()}</div>${r.memo ? `<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>` : ""}<footer>現場面積ノート</footer>`;
+  window.print();
+}
+function download(name, content, type) { const blob = new Blob([content], { type }), url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 500); }
+function csvCell(v) { return `"${String(v ?? "").replace(/"/g, '""')}"`; }
+function exportCsv() {
+  if (!state.records.length) return showToast("出力する記録がありません");
+  const head = ["名称・測点名", "日付", "図形数", "合計面積(m²)", "設計面積(m²)", "差(m²)", "比率(%)", "メモ"];
+  const rows = state.records.map(r => {
+    const total = computeTotal(r.shapes), d = designDiff(total, r.designArea);
+    return [r.name, r.date, r.shapes.length, total.toFixed(state.settings.digits), r.designArea ?? "", d ? d.diff.toFixed(state.settings.digits) : "", d ? d.ratio.toFixed(2) : "", r.memo].map(csvCell).join(",");
+  });
+  download(`現場面積_${today()}.csv`, "﻿" + [head.map(csvCell).join(","), ...rows].join("\r\n"), "text/csv;charset=utf-8");
+}
+function exportJson() { download(`現場面積バックアップ_${today()}.json`, JSON.stringify({ app: "現場面積ノート", version: 3, exportedAt: new Date().toISOString(), records: state.records }, null, 2), "application/json"); }
+async function importJson(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    if (!data || !Array.isArray(data.records) || !data.records.every(r => r.id && r.name && Array.isArray(r.shapes))) throw Error();
+    const map = new Map(state.records.map(r => [r.id, r]));
+    data.records.forEach(r => map.set(r.id, r));
+    state.records = [...map.values()].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
+    persist(); renderHistory(); showToast(`${data.records.length}件を復元しました`);
+  } catch { showToast("このバックアップは読み込めません"); }
+  finally { $("importJsonInput").value = ""; }
+}
+function showToast(text) { const t = $("toast"); t.textContent = text; t.classList.add("show"); clearTimeout(showToast.timer); showToast.timer = setTimeout(() => t.classList.remove("show"), 2200); }
+
+// ---------- 設定・屋外モード・画面の消灯防止 ----------
+function applySettings() {
+  document.body.classList.toggle("outdoor", state.settings.outdoor);
+  $("outdoorButton").setAttribute("aria-pressed", String(state.settings.outdoor));
+  $("setDigits").value = String(state.settings.digits); $("setMethod").value = state.settings.method; $("setSumMode").value = state.settings.sumMode;
+  $("setOutdoor").checked = state.settings.outdoor; $("setWakeLock").checked = state.settings.wakeLock;
+}
+function changeSetting(key, value) { state.settings[key] = value; saveSettings(); applySettings(); refresh(); renderHistory(); if (key === "wakeLock") updateWakeLock(); }
+function renderWakeStatus() {
+  $("wakeLockStatus").textContent = !("wakeLock" in navigator) ? "この端末・ブラウザは消灯防止に対応していません。" : state.wakeLock ? "消灯防止は有効です。" : state.settings.wakeLock ? "画面をタップすると有効になります。" : "";
+}
+async function updateWakeLock() {
+  if (!("wakeLock" in navigator)) { renderWakeStatus(); return; }
+  const want = state.settings.wakeLock && document.visibilityState === "visible";
+  if (want && !state.wakeLock && !state.wakeLockPending) {
+    state.wakeLockPending = true;
+    try { state.wakeLock = await navigator.wakeLock.request("screen"); state.wakeLock.addEventListener("release", () => { state.wakeLock = null; renderWakeStatus(); }); } catch { }
+    state.wakeLockPending = false;
+  } else if (!want && state.wakeLock) { try { await state.wakeLock.release(); } catch { } state.wakeLock = null; }
+  renderWakeStatus();
+}
+
+// ---------- 音声入力（スマホのキーボード音声入力を使う） ----------
+function openKeyboardDictation(target) {
+  target.focus();
+  try { target.setSelectionRange(target.value.length, target.value.length); } catch { }
+  target.scrollIntoView({ behavior: "smooth", block: "center" });
+  showToast("キーボードのマイクを押して話してください");
+}
+function setupVoiceButtons() {
+  document.querySelectorAll(".voice-button").forEach(button => {
+    button.hidden = !mobileDevice;
+    button.addEventListener("click", () => openKeyboardDictation($(button.dataset.voiceTarget)));
+  });
+}
+
+// ---------- イベント ----------
+setupVoiceButtons();
+document.querySelectorAll(".mode").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
+document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => switchView(b.dataset.view)));
+$("quickInput").addEventListener("input", applyQuickInput);
+$("quickInput").addEventListener("keydown", e => {
+  if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
+  e.preventDefault();
+  if (parseLengths($("quickInput").value).length >= quickTargets().length) addShape();
+});
+DIMENSION_FIELDS.forEach(id => {
+  $(id).addEventListener("input", () => { $("message").textContent = ""; updatePreview(); });
+  $(id).addEventListener("change", () => { const v = parseLength($(id).value); if (Number.isFinite(v)) $(id).value = fmtLen(v); updatePreview(); });
+});
+$("designArea").addEventListener("input", renderSummary);
+$("designArea").addEventListener("change", () => { const v = parseLength($("designArea").value); if (Number.isFinite(v)) $("designArea").value = fmtLen(v); renderSummary(); });
+document.querySelectorAll('input[name="alignment"]').forEach(r => r.addEventListener("change", updatePreview));
+$("flipDirection").addEventListener("change", updatePreview);
+$("swapButton").addEventListener("click", swapAB);
+$("cancelEditButton").addEventListener("click", cancelEdit);
+$("edgeSelect").addEventListener("change", e => { state.selectedEdge = e.target.value; applySharedLength(); updatePreview(); });
+$("drawingCanvas").addEventListener("click", e => {
+  const hit = e.target.closest("[data-edge]"); if (!hit || state.editingId) return;
+  state.selectedEdge = hit.dataset.edge; refreshEdgeOptions(); applySharedLength(); updatePreview(); showToast("接続辺を選択しました");
+});
+$("partsList").addEventListener("click", e => { const b = e.target.closest("[data-edit-shape]"); if (b) startEdit(b.dataset.editShape); });
+$("fitButton").addEventListener("click", () => renderCanvas(true));
+$("addShapeButton").addEventListener("click", addShape);
+$("undoButton").addEventListener("click", () => ask("最後の図形を戻しますか？", "最後に追加した図形と、その接続を削除します。", () => { state.shapes.pop(); refresh(); showToast("最後の図形を戻しました"); }));
+$("newButton").addEventListener("click", () => state.shapes.length ? ask("新しい図面を作りますか？", "未保存の変更は失われます。", resetDrawing) : resetDrawing());
+$("saveDrawingButton").addEventListener("click", saveDrawing);
+$("printButton").addEventListener("click", () => printRecord());
+$("historyList").addEventListener("click", e => {
+  const edit = e.target.closest("[data-edit]"), del = e.target.closest("[data-delete]"), pdf = e.target.closest("[data-pdf]");
+  if (edit) editRecord(edit.dataset.edit);
+  if (pdf) { const r = state.records.find(x => x.id === pdf.dataset.pdf); if (r) printRecord(r); }
+  if (del) ask("図面を削除しますか？", "削除した図面は元に戻せません。", () => { state.records = state.records.filter(r => r.id !== del.dataset.delete); persist(); renderHistory(); showToast("図面を削除しました"); });
+});
+$("cancelConfirmButton").addEventListener("click", () => $("confirmDialog").close());
+$("acceptConfirmButton").addEventListener("click", () => { const fn = state.confirmAction; $("confirmDialog").close(); state.confirmAction = null; if (fn) fn(); });
+$("exportCsvButton").addEventListener("click", exportCsv);
+$("exportJsonButton").addEventListener("click", exportJson);
+$("importJsonInput").addEventListener("change", e => e.target.files[0] && importJson(e.target.files[0]));
+$("settingsButton").addEventListener("click", () => { renderWakeStatus(); $("settingsDialog").showModal(); });
+$("closeSettingsButton").addEventListener("click", () => $("settingsDialog").close());
+$("outdoorButton").addEventListener("click", () => changeSetting("outdoor", !state.settings.outdoor));
+$("setDigits").addEventListener("change", e => changeSetting("digits", Number(e.target.value)));
+$("setMethod").addEventListener("change", e => changeSetting("method", e.target.value));
+$("setSumMode").addEventListener("change", e => changeSetting("sumMode", e.target.value));
+$("setOutdoor").addEventListener("change", e => changeSetting("outdoor", e.target.checked));
+$("setWakeLock").addEventListener("change", e => changeSetting("wakeLock", e.target.checked));
+document.addEventListener("visibilitychange", updateWakeLock);
+document.addEventListener("pointerdown", () => { if (state.settings.wakeLock && !state.wakeLock) updateWakeLock(); }, { passive: true });
+window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); state.deferredInstall = e; $("installButton").classList.remove("hidden"); });
+$("installButton").addEventListener("click", async () => { if (!state.deferredInstall) return; state.deferredInstall.prompt(); await state.deferredInstall.userChoice; state.deferredInstall = null; $("installButton").classList.add("hidden"); });
+if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js"));
+$("date").value = today();
+applySettings(); updateQuickHint(); refresh(); renderHistory(); updateWakeLock();

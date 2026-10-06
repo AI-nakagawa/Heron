@@ -1,0 +1,55 @@
+/* v11: まとめ入力・プレビュー・設計面積・図形の修正・設定・屋外モード */
+.header-actions{display:flex;gap:6px;align-items:center}.icon-button[aria-pressed="true"]{background:var(--lime);color:var(--green);border-color:var(--lime)}
+.design-field{grid-column:1/-1}.design-field .with-unit input{font-size:18px}
+.project-card .voice-field .voice-button{width:36px;height:36px;bottom:5px;right:5px;font-size:17px}
+.project-card .voice-field>input{padding-right:46px}
+.design-summary{margin-top:6px;text-align:right;font-size:13px;color:var(--muted);font-weight:700}.design-summary b{font-size:15px;color:var(--ink)}.design-summary b.plus{color:var(--green-2)}.design-summary b.minus{color:var(--danger)}
+
+.quick-card{background:#edf1ea;border-radius:14px;padding:12px;margin-bottom:4px}.quick-field{margin-bottom:7px}.quick-field small{font-weight:700;color:var(--muted);margin-left:6px;font-size:12px}
+#quickInput{width:100%;height:56px;border:2px solid var(--green-2);border-radius:12px;background:#fff;padding:0 56px 0 12px;font-size:21px;font-weight:800;color:var(--ink);outline:0;font-family:inherit}#quickInput:focus{box-shadow:0 0 0 3px rgba(38,112,90,.18)}
+.quick-parsed{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:8px}.quick-parsed:empty{display:none}.chip{background:#fff;border:1px solid var(--line);border-radius:99px;padding:4px 11px;font-weight:850;font-size:14px}.chip.empty{color:#9aa69f;border-style:dashed}.quick-status{font-size:12px;font-weight:800;color:var(--muted)}.quick-status.ok{color:var(--green-2)}.quick-status.warn{color:#a2570f}
+.quick-help{margin:8px 0 0;font-size:11.5px;line-height:1.55;color:var(--muted)}
+.swap-button{margin-top:9px;width:100%;min-height:42px;border:1px solid var(--line);background:#fff;border-radius:10px;font-weight:800;color:var(--green)}
+
+.preview-box{margin:12px 0 2px;padding:11px 13px;border-radius:12px;background:#fff6e6;border:1.5px dashed #e39a4b;font-size:13px;line-height:1.55}.preview-box.idle{background:#f4f5f1;border-color:var(--line);color:var(--muted)}.preview-box.error{background:#fbeceb;border-color:#e3a39d;color:var(--danger);font-weight:800}
+.preview-line{display:flex;flex-wrap:wrap;justify-content:space-between;gap:4px 14px;font-weight:700}.preview-line b{font-size:19px;color:var(--green)}.preview-box .warn{margin:7px 0 0;color:#8f480b;font-weight:800}
+.ghost-polygon{fill:#f6a54a;fill-opacity:.25;stroke:#e56b32;stroke-width:2.5;stroke-dasharray:7 5;vector-effect:non-scaling-stroke;pointer-events:none}
+.ghost-label{fill:#b2470f;font-weight:900;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-linejoin:round;pointer-events:none}
+.vertex-dot{fill:#174c3c;pointer-events:none}.vertex-label{fill:#0f2f25;font-weight:900;text-anchor:middle;dominant-baseline:middle;paint-order:stroke;stroke:#fff;stroke-linejoin:round;pointer-events:none}
+
+.edit-banner{display:flex;justify-content:space-between;align-items:center;gap:8px;background:#fff1d6;border:1px solid #f0c27a;border-radius:12px;padding:6px 6px 6px 12px;margin-bottom:14px;font-weight:850;color:#7a4a08}
+.mode:disabled{opacity:.45;cursor:not-allowed}.text-button:disabled{opacity:.35}
+.part-row{grid-template-columns:32px 1fr auto auto}.part-row.editing{outline:2px solid #f0a54a;background:#fff4e2}.part-row small{display:block}.thin-badge{color:#a2570f!important;font-weight:800}
+.part-edit{border:1px solid var(--line);background:#fff;border-radius:9px;padding:8px 10px;font-weight:800;font-size:12px;color:var(--green)}
+#confirmText{white-space:pre-line;line-height:1.6}
+
+.settings-dialog{width:min(92%,420px)}.field select{height:48px;border:2px solid var(--line);border-radius:12px;padding:0 10px;font-size:16px;background:#fff;color:var(--ink);font-family:inherit}
+.check-row{display:flex;gap:10px;align-items:center;font-weight:800;margin:16px 0 4px}.check-row input{width:24px;height:24px;flex:none;accent-color:var(--green)}.dialog-actions.single{grid-template-columns:1fr}
+
+#printSheet .print-design{text-align:right;font-size:12pt;font-weight:800;margin-top:2mm}#printSheet .print-rounding{text-align:right;font-size:8pt;color:#555;margin-top:2mm}
+
+@media(max-width:560px){
+  .header-actions .icon-button{padding:7px 8px;font-size:12px}
+  .project-card .design-field{grid-column:1/-1}
+  .project-card .design-field .with-unit input{font-size:16px}
+  .part-row{grid-template-columns:30px 1fr auto}.part-area{grid-column:2}.part-edit{grid-column:3;grid-row:1/span 2;align-self:center}
+}
+
+/* 屋外モード: 直射日光・手袋向けに高コントラストと大きいボタン */
+body.outdoor{--ink:#000;--muted:#25332d;--line:#56645e;--surface:#fff;background:#fff}
+body.outdoor .card{border:2px solid #1d2c26;box-shadow:none}
+body.outdoor .field input,body.outdoor .field textarea,body.outdoor #quickInput{border-width:3px;border-color:#33433c;color:#000}
+body.outdoor .with-unit input,body.outdoor #quickInput{font-size:24px;height:64px}
+body.outdoor .primary-button,body.outdoor .secondary-button,body.outdoor .danger-button{min-height:66px;font-size:19px}
+body.outdoor .mode{min-height:64px;font-size:18px;color:#25332d}
+body.outdoor .voice-button{width:50px;height:50px;background:var(--green);color:#fff}
+body.outdoor .project-card .field input{height:52px}
+body.outdoor .project-card .voice-field .voice-button{width:42px;height:42px}
+body.outdoor .with-unit b{top:22px;color:#000}
+body.outdoor .drawing-scroll{background-color:#fff}
+body.outdoor .shape-polygon{stroke:#000;stroke-width:3.5}
+body.outdoor .edge-length{fill:#000}
+body.outdoor .chip{border-color:#33433c;font-size:16px}
+body.outdoor .quick-card,body.outdoor .flip-field{background:#e9eee6}
+body.outdoor .swap-button,body.outdoor .part-edit,body.outdoor .canvas-tools button{border:2px solid #33433c;min-height:48px}
+body.outdoor .helper,body.outdoor small,body.outdoor .quick-help{color:#25332d}
