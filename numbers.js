@@ -18,11 +18,18 @@ function kanjiInteger(text) {
   return String(total + current);
 }
 
+// 漢数字の前後に別の漢字が続くもの（「一回」「一旦」「三角」「十分」など）は数値として読まない
+const OTHER_KANJI = /[\p{Script=Han}々]/u;
+const NUMERAL_KANJI = /[〇零一二三四五六七八九十百千点]/;
+function isWordPart(ch) { return !!ch && OTHER_KANJI.test(ch) && !NUMERAL_KANJI.test(ch); }
+
 function normalizeSpokenNumbers(text) {
-  let s = String(text ?? "").normalize("NFKC").replace(/てん|ポイント/g, "点");
+  let s = String(text ?? "").normalize("NFKC").replace(/てん|ポイント/g, "点").replace(/ゼロ/g, "〇");
   // 「三点〇一」: 点の前は位取り、点の後は1桁ずつ読む
   s = s.replace(/([〇零一二三四五六七八九十百千0-9]+)\s*点\s*([〇零一二三四五六七八九0-9]+)/g, (_, a, b) => `${kanjiInteger(a)}.${digitwise(b)}`);
-  s = s.replace(/[〇零一二三四五六七八九十百千]+/g, kanjiInteger);
+  s = s.replace(/[〇零一二三四五六七八九十百千]+/g, (k, at, all) => isWordPart(all[at - 1]) || isWordPart(all[at + k.length]) ? " " : kanjiInteger(k));
+  // 「1回」「1つ目」「2度」のような回数・順番は寸法ではないので除く
+  s = s.replace(/(?<![\d.])\d+(?:\.\d+)?\s*(?:回|度|番|個|本|枚|人|つ|目|か所|箇所|ヶ所)/g, " ");
   // 「3メートル5センチ」「4m25」→ 3.05 / 4.25（後ろの数値はセンチとして扱う）
   s = s.replace(/(?<![\d.])(\d+)\s*(?:メートル|m)\s*(\d{1,2})(?![\d.])(?!\s*(?:メートル|m))\s*(?:センチメートル|センチ|cm)?/gi, (_, m, cm) => String(Number(m) + Number(cm) / 100));
   s = s.replace(/(?<![\d.])(\d+(?:\.\d+)?)\s*(?:センチメートル|センチ|cm)/gi, (_, cm) => ` ${Number(cm) / 100} `);
@@ -38,4 +45,10 @@ function parseLength(text) {
   return values.length ? values[0] : NaN;
 }
 
-if (typeof module !== "undefined") module.exports = { parseLengths, parseLength, normalizeSpokenNumbers };
+// 計測の合図（「はい」「OK」）の位置を返す。数がそろった後の合図で図形を追加するのに使う
+const SIGNAL_RE = /(?<![A-Za-zＡ-Ｚａ-ｚ])[OoＯｏ][KkＫｋ](?![A-Za-zＡ-Ｚａ-ｚ])|オッケー?|オーケー|おっけー?|おーけー|はーい|はい|ハイ|ﾊｲ/g;
+function findSignals(text) {
+  return [...String(text ?? "").matchAll(SIGNAL_RE)].map(m => ({ index: m.index, end: m.index + m[0].length }));
+}
+
+if (typeof module !== "undefined") module.exports = { parseLengths, parseLength, normalizeSpokenNumbers, findSignals };

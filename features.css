@@ -103,3 +103,4 @@ body.outdoor .project-toggle{border:2px solid #33433c;padding:6px 12px;font-size
 body.outdoor .project-summary{min-height:48px}
 /* 畳んで空いた分を図面の高さに回す */
 @media(max-width:560px){.project-card.collapsed~.canvas-card .drawing-scroll svg{min-height:350px}}
+.toast{max-width:calc(100vw - 32px);white-space:normal;text-align:center;line-height:1.5}

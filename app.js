@@ -1,10 +1,10 @@
 "use strict";
 const STORAGE_KEY = "field-area-drawings-v2", SETTINGS_KEY = "field-area-settings-v1";
 const THIN_ANGLE_DEG = 20; // これより小さい角を持つ三角形は警告する
-const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true, measureKeyboard: "voice", projectCollapsed: false };
+const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true, measureKeyboard: "voice", projectCollapsed: false, signalAdd: true };
 const $ = id => document.getElementById(id);
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, deferredInstall: null, viewBox: "0 0 700 430", wakeLock: null, wakeLockPending: false };
+const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, deferredInstall: null, viewBox: "0 0 700 430", wakeLock: null, wakeLockPending: false, usedSignal: -1 };
 const FIELD_LABELS = { sideA: "a", sideB: "b", sideC: "c", topBase: "上底", bottomBase: "下底", height: "高さ" };
 const DIMENSION_FIELDS = Object.keys(FIELD_LABELS);
 const mobileDevice = /Android|iPad|iPhone|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 0;
@@ -254,16 +254,38 @@ function updateQuickHint() {
   $("quickHint").textContent = `${targets.join("・")} の順に${targets.length}つ${baseLocked() ? `（${state.mode === "triangle" ? "c" : "下底"}は接続辺）` : ""}`;
   $("quickInput").placeholder = targets.length === 2 ? "例：4.25 3.01" : "例：3.01 4.25 3";
 }
+// 合図で追加: 最後に使った合図より後ろの文字だけを、今の図形の寸法として読む
+function activeQuickText() {
+  const text = $("quickInput").value, signals = findSignals(text);
+  if (state.usedSignal >= signals.length) state.usedSignal = signals.length - 1;
+  return state.usedSignal >= 0 ? text.slice(signals[state.usedSignal].end) : text;
+}
+// 数がそろった後の「はい」「OK」で図形を追加する。追加したら true
+function processSignals() {
+  if (!state.settings.signalAdd) return false;
+  const text = $("quickInput").value, signals = findSignals(text), needed = quickTargets();
+  for (let i = state.usedSignal + 1; i < signals.length; i++) {
+    const start = state.usedSignal >= 0 ? signals[state.usedSignal].end : 0;
+    const values = parseLengths(text.slice(start, signals[i].index));
+    if (values.length < needed.length) continue; // 1つ目の数字の後の合図などは、次の数字を待つ
+    needed.forEach((id, k) => { $(id).value = fmtLen(values[k]); });
+    state.usedSignal = i;
+    if (addShape({ auto: true })) return true;
+    DIMENSION_FIELDS.forEach(id => { if (!$(id).readOnly) $(id).value = ""; }); // 追加できなかった寸法は捨てて、読み直しを待つ
+  }
+  return false;
+}
 function applyQuickInput() {
   const text = $("quickInput").value, targets = quickTargets();
-  if (!text.trim()) { $("quickParsed").innerHTML = ""; updatePreview(); return; }
-  const values = parseLengths(text);
+  if (!text.trim()) { state.usedSignal = -1; $("quickParsed").innerHTML = ""; updatePreview(); return; }
+  if (processSignals()) return;
+  const values = parseLengths(activeQuickText());
   targets.forEach((id, i) => { $(id).value = values[i] !== undefined ? fmtLen(values[i]) : ""; });
   const chips = targets.map((id, i) => `<span class="chip ${values[i] === undefined ? "empty" : ""}">${FIELD_LABELS[id]} ${values[i] !== undefined ? fmtLen(values[i]) : "—"}</span>`).join("");
   let status;
   if (values.length < targets.length) status = `<span class="quick-status">あと${targets.length - values.length}つ</span>`;
   else if (values.length > targets.length) status = `<span class="quick-status warn">数が${values.length}個あります。最初の${targets.length}個を使います</span>`;
-  else status = `<span class="quick-status ok">✓ そろいました（改行キーか「追加」で追加）</span>`;
+  else status = `<span class="quick-status ok">✓ そろいました（${state.settings.signalAdd ? "「はい」「OK」" : "改行キー"}か「追加」で追加）</span>`;
   $("quickParsed").innerHTML = chips + status;
   updatePreview();
 }
@@ -295,7 +317,7 @@ function updatePreview() {
     box.className = "preview-box idle";
     box.textContent = "寸法を入れると、ここに面積が、図面に点線で追加位置が表示されます。";
     status.className = "measure-status idle";
-    status.textContent = "寸法を話すか入力すると、図面に点線で表示されます";
+    status.textContent = state.settings.signalAdd ? "寸法を話し、数がそろったら「はい」「OK」で追加します" : "寸法を話すか入力すると、図面に点線で表示されます（「はい」「OK」などの合図は無視します）";
   } else {
     try {
       const cand = buildCandidate(); state.candidate = cand;
@@ -317,7 +339,7 @@ function updatePreview() {
 }
 function clearInputs() {
   DIMENSION_FIELDS.forEach(id => $(id).value = "");
-  $("quickInput").value = ""; $("quickParsed").innerHTML = "";
+  $("quickInput").value = ""; $("quickParsed").innerHTML = ""; state.usedSignal = -1;
   $("flipDirection").checked = false;
   document.querySelector('input[name="alignment"][value="center"]').checked = true;
   $("message").textContent = "";
@@ -331,10 +353,10 @@ function setMode(mode) {
   clearInputs(); updateQuickHint(); updatePreview();
 }
 function swapAB() {
-  const values = parseLengths($("quickInput").value);
+  const values = parseLengths(activeQuickText());
   if (values.length >= 2) {
     [values[0], values[1]] = [values[1], values[0]];
-    $("quickInput").value = values.map(fmtLen).join(" ");
+    $("quickInput").value = values.map(fmtLen).join(" "); state.usedSignal = -1;
     applyQuickInput();
   } else {
     const a = $("sideA").value; $("sideA").value = $("sideB").value; $("sideB").value = a;
@@ -347,25 +369,37 @@ function undoLast() {
 }
 
 // ---------- 図形の追加・修正 ----------
-function addShape() {
+// auto: 合図で追加したとき。音声入力の最中なので入力欄の文字は書き換えない（iPhone で文字が二重になるのを防ぐ）
+function addShape({ auto = false } = {}) {
   let cand;
-  try { cand = buildCandidate(); } catch (e) { $("message").textContent = e.message; return; }
+  try { cand = buildCandidate(); }
+  catch (e) { $("message").textContent = e.message; if (auto) showToast(`追加できません：${e.message} 読み直してください`); return false; }
   const editing = editingShape();
+  const clearAfterAdd = () => {
+    if (!auto) { clearInputs(); return; }
+    DIMENSION_FIELDS.forEach(id => $(id).value = "");
+    $("flipDirection").checked = false;
+    document.querySelector('input[name="alignment"][value="center"]').checked = true;
+    $("message").textContent = "";
+    applySharedLength();
+  };
   const commit = () => {
     if (editing) {
       const n = state.shapes.findIndex(s => s.id === editing.id) + 1;
       state.shapes = cand.rebuilt; state.editingId = null;
-      clearInputs(); refresh(); showToast(`図形 ${n} を修正しました`);
+      clearAfterAdd(); refresh(); showToast(`図形 ${n} を修正しました`);
     } else {
       state.shapes.push(cand.shape);
       const next = freeEdges().find(e => e.shapeId === cand.shape.id);
       if (next) state.selectedEdge = edgeKey(next);
-      clearInputs(); refresh(); showToast(`図形 ${state.shapes.length} を追加しました`);
+      clearAfterAdd(); refresh(); showToast(`図形 ${state.shapes.length} を追加しました`);
     }
-    if (measureOpen()) focusQuick(); else $("quickInput").blur();
+    if (auto) navigator.vibrate?.(40);
+    if (measureOpen()) focusQuick(); else if (!auto) $("quickInput").blur();
   };
   if (cand.overlap) ask("図形が重なっています", `${cand.warnings.at(-1).text}\nこのまま${editing ? "修正" : "追加"}しますか？`, commit, editing ? "修正する" : "追加する");
   else commit();
+  return true;
 }
 function startEdit(id) {
   const shape = state.shapes.find(s => s.id === id); if (!shape) return;
@@ -561,7 +595,7 @@ function applySettings() {
   document.body.classList.toggle("outdoor", state.settings.outdoor);
   $("outdoorButton").setAttribute("aria-pressed", String(state.settings.outdoor));
   $("setDigits").value = String(state.settings.digits); $("setMethod").value = state.settings.method; $("setSumMode").value = state.settings.sumMode;
-  $("setOutdoor").checked = state.settings.outdoor; $("setWakeLock").checked = state.settings.wakeLock;
+  $("setOutdoor").checked = state.settings.outdoor; $("setWakeLock").checked = state.settings.wakeLock; $("setSignalAdd").checked = state.settings.signalAdd;
 }
 function changeSetting(key, value) { state.settings[key] = value; saveSettings(); applySettings(); refresh(); renderHistory(); if (key === "wakeLock") updateWakeLock(); }
 function renderWakeStatus() {
@@ -597,10 +631,16 @@ setupVoiceButtons();
 document.querySelectorAll(".mode").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
 document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => switchView(b.dataset.view)));
 $("quickInput").addEventListener("input", applyQuickInput);
+// 入力欄から離れたら（音声入力が終わったら）、合図で使い終わった文字を消して残りだけにする
+$("quickInput").addEventListener("blur", () => {
+  if (state.usedSignal < 0) return;
+  const rest = activeQuickText().replace(/^[\s、。,.!！?？]+/, "");
+  state.usedSignal = -1; $("quickInput").value = rest; applyQuickInput();
+});
 $("quickInput").addEventListener("keydown", e => {
   if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
   e.preventDefault();
-  if (parseLengths($("quickInput").value).length >= quickTargets().length) addShape();
+  if (parseLengths(activeQuickText()).length >= quickTargets().length) addShape();
 });
 DIMENSION_FIELDS.forEach(id => {
   $(id).addEventListener("input", () => { $("message").textContent = ""; updatePreview(); });
@@ -668,6 +708,7 @@ $("setMethod").addEventListener("change", e => changeSetting("method", e.target.
 $("setSumMode").addEventListener("change", e => changeSetting("sumMode", e.target.value));
 $("setOutdoor").addEventListener("change", e => changeSetting("outdoor", e.target.checked));
 $("setWakeLock").addEventListener("change", e => changeSetting("wakeLock", e.target.checked));
+$("setSignalAdd").addEventListener("change", e => changeSetting("signalAdd", e.target.checked));
 document.addEventListener("visibilitychange", updateWakeLock);
 document.addEventListener("pointerdown", () => { if (state.settings.wakeLock && !state.wakeLock) updateWakeLock(); }, { passive: true });
 window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); state.deferredInstall = e; $("installButton").classList.remove("hidden"); });
