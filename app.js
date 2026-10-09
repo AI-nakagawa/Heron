@@ -4,7 +4,7 @@ const THIN_ANGLE_DEG = 20; // これより小さい角を持つ三角形は警�
 const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true, measureKeyboard: "voice", projectCollapsed: false, signalAdd: true };
 const $ = id => document.getElementById(id);
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, deferredInstall: null, viewBox: "0 0 700 430", wakeLock: null, wakeLockPending: false, usedSignal: -1 };
+const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, deferredInstall: null, viewBox: "0 0 700 430", wakeLock: null, wakeLockPending: false, signal: { needs: [], added: 0, barrier: null }, lastQuick: "", voiceLog: [], selected: new Set() };
 const FIELD_LABELS = { sideA: "a", sideB: "b", sideC: "c", topBase: "上底", bottomBase: "下底", height: "高さ" };
 const DIMENSION_FIELDS = Object.keys(FIELD_LABELS);
 const mobileDevice = /Android|iPad|iPhone|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 0;
@@ -14,29 +14,33 @@ function today() { const d = new Date(); return `${d.getFullYear()}-${String(d.g
 function esc(v) { return String(v ?? "").replace(/[&<>'"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c])); }
 function num(id) { return parseLength($(id).value); }
 function fmtLen(v) { return String(Number(Number(v).toFixed(3))); }
-function fmt(v) { const d = state.settings.digits; return Number(v).toLocaleString("ja-JP", { minimumFractionDigits: d, maximumFractionDigits: d }); }
-function roundArea(v) {
-  const f = 10 ** state.settings.digits, x = Number(v) * f;
-  const r = state.settings.method === "floor" ? Math.floor(x + 1e-7) : state.settings.method === "ceil" ? Math.ceil(x - 1e-7) : Math.round(x + 1e-7);
+// 面積の丸め方。保存した記録は保存時の丸め方（record.rounding）で表示・出力し、後から設定を変えても値が変わらないようにする
+const LEGACY_ROUNDING = { digits: 3, method: "round", sumMode: "total" }; // 丸め方を持たない旧記録（v10 まで）の表示方法
+function currentRounding() { const { digits, method, sumMode } = state.settings; return { digits, method, sumMode }; }
+function recordRounding(record) { return record?.rounding || LEGACY_ROUNDING; }
+function fmt(v, digits = state.settings.digits) { return Number(v).toLocaleString("ja-JP", { minimumFractionDigits: digits, maximumFractionDigits: digits }); }
+function roundArea(v, ro = state.settings) {
+  const f = 10 ** ro.digits, x = Number(v) * f;
+  const r = ro.method === "floor" ? Math.floor(x + 1e-7) : ro.method === "ceil" ? Math.ceil(x - 1e-7) : Math.round(x + 1e-7);
   return r / f;
 }
-function computeTotal(shapes) {
-  if (state.settings.sumMode === "each") return Number(shapes.reduce((s, v) => s + roundArea(v.area), 0).toFixed(state.settings.digits));
-  return roundArea(shapes.reduce((s, v) => s + Number(v.area), 0));
+function computeTotal(shapes, ro = state.settings) {
+  if (ro.sumMode === "each") return Number(shapes.reduce((s, v) => s + roundArea(v.area, ro), 0).toFixed(ro.digits));
+  return roundArea(shapes.reduce((s, v) => s + Number(v.area), 0), ro);
 }
-function roundingNote() {
-  const method = { round: "四捨五入", floor: "切り捨て", ceil: "切り上げ" }[state.settings.method];
-  return `面積は小数第${state.settings.digits}位まで（${method}・${state.settings.sumMode === "each" ? "図形ごとに丸めて合計" : "合計してから丸め"}）`;
+function roundingText(ro = state.settings) {
+  return `小数第${ro.digits}位・${{ round: "四捨五入", floor: "切り捨て", ceil: "切り上げ" }[ro.method]}・${ro.sumMode === "each" ? "図形ごとに丸めて合計" : "合計してから丸め"}`;
 }
-function designDiff(total, design) {
+function roundingNote(ro = state.settings) { return `面積の丸め：${roundingText(ro)}`; }
+function designDiff(total, design, digits = state.settings.digits) {
   if (!(design > 0)) return null;
-  const diff = Number((total - design).toFixed(state.settings.digits));
+  const diff = Number((total - design).toFixed(digits));
   return { diff, ratio: diff / design * 100 };
 }
-function diffText(total, design) {
-  const d = designDiff(total, design); if (!d) return "";
+function diffText(total, design, digits = state.settings.digits) {
+  const d = designDiff(total, design, digits); if (!d) return "";
   const sign = d.diff > 0 ? "+" : d.diff < 0 ? "−" : "±";
-  return `${sign}${fmt(Math.abs(d.diff))} m²（${sign}${Math.abs(d.ratio).toFixed(2)}%）`;
+  return `${sign}${fmt(Math.abs(d.diff), digits)} m²（${sign}${Math.abs(d.ratio).toFixed(2)}%）`;
 }
 
 // ---------- 幾何 ----------
@@ -161,9 +165,66 @@ function vertexNameOf(p, vertices) { return vertices.find(v => samePoint(v, p))?
 function shapeVertexText(shape, vertices) { return shape.points.map(p => vertexNameOf(p, vertices)).join("-"); }
 
 // ---------- 保存・設定 ----------
-function loadRecords() { try { const v = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); if (Array.isArray(v)) return v; } catch { } return []; }
+// 記録の検査: 端末内の保存データと JSON バックアップは、決まった形の値だけを取り出して使う（細工したデータで画面にスクリプトを入れられないように）
+// 起動直後（state の初期化中）に呼ばれるので、const ではなく関数宣言にする
+function isId(v) { return typeof v === "string" && /^[A-Za-z0-9._-]{1,64}$/.test(v); }
+function isNum(v) { return typeof v === "number" && Number.isFinite(v); }
+function sanitizeRounding(o) {
+  if (!o || ![1, 2, 3].includes(o.digits) || !["round", "floor", "ceil"].includes(o.method) || !["total", "each"].includes(o.sumMode)) return null;
+  return { digits: o.digits, method: o.method, sumMode: o.sumMode };
+}
+function sanitizeShape(s) {
+  if (!s || typeof s !== "object" || !isId(s.id) || !["triangle", "trapezoid"].includes(s.type)) return null;
+  const n = s.type === "triangle" ? 3 : 4, keys = s.type === "triangle" ? ["a", "b", "c"] : ["top", "bottom", "height"];
+  if (!Array.isArray(s.points) || s.points.length !== n || !s.points.every(p => p && isNum(p.x) && isNum(p.y))) return null;
+  const d = s.dimensions || {};
+  if (!keys.every(k => isNum(d[k]) && d[k] > 0) || !isNum(s.area) || s.area < 0) return null;
+  const alignment = s.type === "trapezoid" ? s.alignment : null;
+  if (s.type === "trapezoid" && !["left", "center", "right"].includes(alignment)) return null;
+  const out = { id: s.id, type: s.type, points: s.points.map(p => ({ x: p.x, y: p.y })), area: s.area, dimensions: Object.fromEntries(keys.map(k => [k, d[k]])), alignment };
+  if ("parent" in s) { // 無い場合（v10 まで）は withConnections で点の位置から復元する
+    const p = s.parent;
+    if (p !== null && !(p && isId(p.shapeId) && Number.isInteger(p.index) && p.index >= 0 && p.index < 4)) return null;
+    out.parent = p ? { shapeId: p.shapeId, index: p.index } : null; out.flip = s.flip === true;
+  }
+  return out;
+}
+function sanitizeRecord(r) {
+  if (!r || typeof r !== "object" || !isId(r.id) || typeof r.name !== "string" || !r.name.trim()) return null;
+  if (!Array.isArray(r.shapes) || !r.shapes.length || r.shapes.length > 1000) return null;
+  const shapes = r.shapes.map(sanitizeShape);
+  if (shapes.some(s => !s)) return null;
+  const rounding = sanitizeRounding(r.rounding), str = (v, max) => typeof v === "string" ? v.slice(0, max) : "";
+  return {
+    id: r.id, name: r.name.slice(0, 200), date: typeof r.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.date) ? r.date : "",
+    designArea: isNum(r.designArea) && r.designArea > 0 ? r.designArea : null, memo: str(r.memo, 2000), shapes,
+    total: isNum(r.total) ? r.total : 0, ...(rounding ? { rounding } : {}), createdAt: str(r.createdAt, 40), updatedAt: str(r.updatedAt, 40),
+  };
+}
+// 検査で読み込めない記録があったときは、上書きで消えないよう元のデータを別のキーに残す
+function loadRecords() {
+  const BACKUP_KEY = "field-area-drawings-v2-rejected"; // ここも state の初期化中に動くので、外の const は使わない
+  let raw = null;
+  try {
+    raw = localStorage.getItem(STORAGE_KEY);
+    const v = JSON.parse(raw || "[]");
+    if (!Array.isArray(v)) throw Error("not array");
+    const records = v.map(sanitizeRecord).filter(Boolean);
+    if (records.length < v.length) localStorage.setItem(BACKUP_KEY, raw);
+    return records;
+  } catch {
+    try { if (raw) localStorage.setItem(BACKUP_KEY, raw); } catch { }
+    return [];
+  }
+}
 function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.records)); }
-function loadSettings() { try { return { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") }; } catch { return { ...DEFAULT_SETTINGS }; } }
+function loadSettings() {
+  try {
+    const s = { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") };
+    return sanitizeRounding(s) ? s : { ...s, ...DEFAULT_SETTINGS_ROUNDING() };
+  } catch { return { ...DEFAULT_SETTINGS }; }
+}
+function DEFAULT_SETTINGS_ROUNDING() { const { digits, method, sumMode } = DEFAULT_SETTINGS; return { digits, method, sumMode }; }
 function saveSettings() { try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings)); } catch { } }
 
 // ---------- 図面 ----------
@@ -195,7 +256,7 @@ function svgMarkup(shapes, { viewBox, selectedEdge = null, ghost = null, interac
   });
   if (interactive) freeEdges(shapes).forEach(e => {
     const key = edgeKey(e);
-    html += `<line class="edge-line ${selectedEdge === key ? "selected" : ""}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/><line class="edge-hit" data-edge="${key}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/>`;
+    html += `<line class="edge-line ${selectedEdge === key ? "selected" : ""}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/><line class="edge-hit" data-edge="${esc(key)}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/>`;
   });
   if (ghost) {
     const gc = centroid(ghost.points);
@@ -239,7 +300,7 @@ function refreshEdgeOptions() {
   if (!edges.some(e => edgeKey(e) === state.selectedEdge)) state.selectedEdge = edgeKey(edges[0]);
   $("edgeSelect").innerHTML = edges.map(e => {
     const si = state.shapes.findIndex(s => s.id === e.shapeId) + 1, key = edgeKey(e);
-    return `<option value="${key}" ${key === state.selectedEdge ? "selected" : ""}>${vertexNameOf(e.a, vertices)}–${vertexNameOf(e.b, vertices)}（${dist(e.a, e.b).toFixed(3)} m）・図形 ${si}</option>`;
+    return `<option value="${esc(key)}" ${key === state.selectedEdge ? "selected" : ""}>${vertexNameOf(e.a, vertices)}–${vertexNameOf(e.b, vertices)}（${dist(e.a, e.b).toFixed(3)} m）・図形 ${si}</option>`;
   }).join("");
 }
 function applySharedLength() {
@@ -254,31 +315,66 @@ function updateQuickHint() {
   $("quickHint").textContent = `${targets.join("・")} の順に${targets.length}つ${baseLocked() ? `（${state.mode === "triangle" ? "c" : "下底"}は接続辺）` : ""}`;
   $("quickInput").placeholder = targets.length === 2 ? "例：4.25 3.01" : "例：3.01 4.25 3";
 }
-// 合図で追加: 最後に使った合図より後ろの文字だけを、今の図形の寸法として読む
-function activeQuickText() {
-  const text = $("quickInput").value, signals = findSignals(text);
-  if (state.usedSignal >= signals.length) state.usedSignal = signals.length - 1;
-  return state.usedSignal >= 0 ? text.slice(signals[state.usedSignal].end) : text;
+// ---------- 合図（はい・OK）で追加 ----------
+// 音声入力は話している途中で前の文字を書き直すことがある。追加済みの数は「先頭から数えて何まとまり目まで使ったか」で覚え、
+// 入力のたびに先頭から数え直す。書き直しで数が減っても追加し直さない。
+// barrier: 二重入力を読み飛ばしたときの区切り（その時点の合図の数と、それまでに使ったまとまりの数）
+function resetSignalSession() { state.signal = { needs: [], added: 0, barrier: null }; }
+function signalGroups(text, limit = Infinity) {
+  const signals = findSignals(text), barrier = state.signal.barrier;
+  let groups = [], rest = 0, from = 0;
+  if (barrier) { // 区切りまでの文字はすべて使い終わった扱い
+    groups = new Array(barrier.groups).fill(null);
+    from = Math.min(barrier.signals, signals.length);
+    rest = from ? signals[from - 1].end : 0;
+  }
+  for (const sig of signals.slice(from)) {
+    if (groups.length >= limit) break;
+    const need = state.signal.needs[groups.length] ?? quickTargets().length;
+    const values = parseLengths(text.slice(rest, sig.index));
+    if (values.length < need) continue; // 1つ目の数字の後の合図などは、次の数字を待つ
+    groups.push(values.slice(0, need)); rest = sig.end;
+  }
+  return { groups, rest };
 }
-// 数がそろった後の「はい」「OK」で図形を追加する。追加したら true
+// 使い終わったまとまりより後ろの文字（今の図形の寸法）
+function activeQuickText() {
+  const text = $("quickInput").value;
+  return state.signal.added ? text.slice(signalGroups(text, state.signal.added).rest) : text;
+}
+// 新しくそろったまとまりがあれば図形を追加する。追加したら true
 function processSignals() {
   if (!state.settings.signalAdd) return false;
-  const text = $("quickInput").value, signals = findSignals(text), needed = quickTargets();
-  for (let i = state.usedSignal + 1; i < signals.length; i++) {
-    const start = state.usedSignal >= 0 ? signals[state.usedSignal].end : 0;
-    const values = parseLengths(text.slice(start, signals[i].index));
-    if (values.length < needed.length) continue; // 1つ目の数字の後の合図などは、次の数字を待つ
-    needed.forEach((id, k) => { $(id).value = fmtLen(values[k]); });
-    state.usedSignal = i;
-    if (addShape({ auto: true })) return true;
-    DIMENSION_FIELDS.forEach(id => { if (!$(id).readOnly) $(id).value = ""; }); // 追加できなかった寸法は捨てて、読み直しを待つ
-  }
-  return false;
+  const k = state.signal.added, { groups } = signalGroups($("quickInput").value, k + 1);
+  if (groups.length <= k) return false;
+  const targets = quickTargets(), values = groups[k];
+  state.signal.needs[k] = targets.length; state.signal.added = k + 1;
+  targets.forEach((id, i) => { $(id).value = fmtLen(values[i]); });
+  logVoice(`合図で追加: ${values.map(fmtLen).join(" ")}`);
+  if (addShape({ auto: true })) return true;
+  DIMENSION_FIELDS.forEach(id => { if (!$(id).readOnly) $(id).value = ""; }); // 追加できなかった寸法は捨てて、読み直しを待つ
+  return processSignals();
+}
+// 追加の直後に、話した文字がそっくりもう一度入った場合（iPhone で起きることがある）は、追加せずに読み飛ばす
+function skipDuplicatedInsert(prev, now) {
+  if (!state.settings.signalAdd || !state.signal.added || !now.startsWith(prev)) return false;
+  const inserted = now.slice(prev.length), norm = t => t.replace(/\s/g, "");
+  if (findSignals(inserted).length < 2 || !norm(prev).endsWith(norm(inserted))) return false;
+  state.signal.barrier = { signals: findSignals(now).length, groups: state.signal.added }; // 入力欄にある文字はすべて使い終わった扱いにする
+  logVoice(`二重入力を読み飛ばし: "${inserted}"`);
+  showToast("同じ言葉が二重に入ったため、読み飛ばしました");
+  return true;
+}
+function logVoice(text) {
+  const t = new Date(), hms = [t.getHours(), t.getMinutes(), t.getSeconds()].map(v => String(v).padStart(2, "0")).join(":");
+  state.voiceLog.push(`${hms} ${text}`);
+  if (state.voiceLog.length > 80) state.voiceLog.shift();
 }
 function applyQuickInput() {
   const text = $("quickInput").value, targets = quickTargets();
-  if (!text.trim()) { state.usedSignal = -1; $("quickParsed").innerHTML = ""; updatePreview(); return; }
-  if (processSignals()) return;
+  if (!text.trim()) { resetSignalSession(); state.lastQuick = text; $("quickParsed").innerHTML = ""; updatePreview(); return; }
+  if (processSignals()) { state.lastQuick = $("quickInput").value; return; }
+  state.lastQuick = text;
   const values = parseLengths(activeQuickText());
   targets.forEach((id, i) => { $(id).value = values[i] !== undefined ? fmtLen(values[i]) : ""; });
   const chips = targets.map((id, i) => `<span class="chip ${values[i] === undefined ? "empty" : ""}">${FIELD_LABELS[id]} ${values[i] !== undefined ? fmtLen(values[i]) : "—"}</span>`).join("");
@@ -339,7 +435,7 @@ function updatePreview() {
 }
 function clearInputs() {
   DIMENSION_FIELDS.forEach(id => $(id).value = "");
-  $("quickInput").value = ""; $("quickParsed").innerHTML = ""; state.usedSignal = -1;
+  $("quickInput").value = ""; $("quickParsed").innerHTML = ""; resetSignalSession(); state.lastQuick = "";
   $("flipDirection").checked = false;
   document.querySelector('input[name="alignment"][value="center"]').checked = true;
   $("message").textContent = "";
@@ -356,7 +452,7 @@ function swapAB() {
   const values = parseLengths(activeQuickText());
   if (values.length >= 2) {
     [values[0], values[1]] = [values[1], values[0]];
-    $("quickInput").value = values.map(fmtLen).join(" "); state.usedSignal = -1;
+    $("quickInput").value = values.map(fmtLen).join(" "); resetSignalSession();
     applyQuickInput();
   } else {
     const a = $("sideA").value; $("sideA").value = $("sideB").value; $("sideB").value = a;
@@ -443,7 +539,7 @@ function renderSummary() {
 
 // ---------- 図面を見ながら入力（全画面） ----------
 function measureOpen() { return !$("measureOverlay").hidden; }
-function focusQuick() { const input = $("quickInput"); input.focus({ preventScroll: true }); try { input.setSelectionRange(input.value.length, input.value.length); } catch { } }
+function focusQuick() { const input = $("quickInput"); if (document.activeElement === input) return; input.focus({ preventScroll: true }); try { input.setSelectionRange(input.value.length, input.value.length); } catch { } }
 function syncMeasureTools() {
   const editing = editingShape(), locked = baseLocked(), edge = lockedEdge();
   $("measureMode").textContent = state.mode === "triangle" ? "△ 三角形" : "▱ 台形";
@@ -492,7 +588,7 @@ function renderParts() {
   $("partsSection").classList.toggle("hidden", !state.shapes.length);
   $("partsList").innerHTML = state.shapes.map((s, i) => {
     const thin = s.type === "triangle" && minAngle(s) < THIN_ANGLE_DEG;
-    return `<div class="part-row ${s.id === state.editingId ? "editing" : ""}"><span class="part-number">${i + 1}</span><div><strong>${s.type === "triangle" ? "三角形" : "台形"}${s.type === "trapezoid" ? `・${{ left: "左", center: "中央", right: "右" }[s.alignment]}揃え` : ""}（${shapeVertexText(s, vertices)}）</strong><small>${dimensionText(s)}</small>${thin ? `<small class="thin-badge">⚠ 最小角 ${minAngle(s).toFixed(1)}°</small>` : ""}</div><div class="part-area">${fmt(roundArea(s.area))} m²</div><button type="button" class="part-edit" data-edit-shape="${s.id}">修正</button></div>`;
+    return `<div class="part-row ${s.id === state.editingId ? "editing" : ""}"><span class="part-number">${i + 1}</span><div><strong>${s.type === "triangle" ? "三角形" : "台形"}${s.type === "trapezoid" ? `・${{ left: "左", center: "中央", right: "右" }[s.alignment]}揃え` : ""}（${shapeVertexText(s, vertices)}）</strong><small>${dimensionText(s)}</small>${thin ? `<small class="thin-badge">⚠ 最小角 ${minAngle(s).toFixed(1)}°</small>` : ""}</div><div class="part-area">${fmt(roundArea(s.area))} m²</div><button type="button" class="part-edit" data-edit-shape="${esc(s.id)}">修正</button></div>`;
   }).join("");
 }
 function dimensionText(s) { const d = s.dimensions; return s.type === "triangle" ? `a ${fmtLen(d.a)}m / b ${fmtLen(d.b)}m / c ${fmtLen(d.c)}m` : `上底 ${fmtLen(d.top)}m / 下底 ${fmtLen(d.bottom)}m / 高さ ${fmtLen(d.height)}m`; }
@@ -527,7 +623,7 @@ function saveDrawing() {
   if (!state.shapes.length) { showToast("図形を1つ以上追加してください"); return; }
   if (state.editingId) { showToast("図形の修正を確定するか、やめてから保存してください"); return; }
   const now = new Date().toISOString(), design = num("designArea");
-  const record = { id: state.recordId || uid(), name, date: $("date").value || today(), designArea: design > 0 ? design : null, memo: $("memo").value.trim(), shapes: structuredClone(state.shapes), total: computeTotal(state.shapes), createdAt: now, updatedAt: now };
+  const record = { id: state.recordId || uid(), name, date: $("date").value || today(), designArea: design > 0 ? design : null, memo: $("memo").value.trim(), shapes: structuredClone(state.shapes), total: computeTotal(state.shapes), rounding: currentRounding(), createdAt: now, updatedAt: now };
   const i = state.records.findIndex(r => r.id === record.id);
   if (i >= 0) { record.createdAt = state.records[i].createdAt; state.records[i] = record; } else state.records.unshift(record);
   state.recordId = record.id; persist(); renderHistory();
@@ -541,13 +637,28 @@ function editRecord(id) {
   $("saveDrawingButton").textContent = "変更を保存";
   state.selectedEdge = null; clearInputs(); refresh(); renderProjectSummary(); switchView("drawing");
 }
+// 保存した記録の合計（保存時の丸め方で計算）
+function recordTotal(r) { return computeTotal(r.shapes, recordRounding(r)); }
 function renderHistory() {
   $("historyCount").textContent = state.records.length;
   $("emptyState").classList.toggle("hidden", state.records.length > 0);
+  state.selected = new Set([...state.selected].filter(id => state.records.some(r => r.id === id)));
   $("historyList").innerHTML = state.records.map(r => {
-    const total = computeTotal(r.shapes), diff = diffText(total, r.designArea);
-    return `<article class="record"><div class="record-main"><button type="button" data-edit="${r.id}"><div class="record-name">${esc(r.name)}</div><div class="record-meta">${esc(r.date)} ｜ ${r.shapes.length}図形${diff ? `<br>設計比 ${diff}` : ""}${r.memo ? `<br>${esc(r.memo)}` : ""}</div></button></div><div><div class="record-area">${fmt(total)} <small>m²</small></div><div class="history-buttons"><button type="button" data-pdf="${r.id}">PDF</button><button type="button" data-edit="${r.id}">編集</button><button type="button" class="delete" data-delete="${r.id}">削除</button></div></div></article>`;
+    const ro = recordRounding(r), total = recordTotal(r), diff = diffText(total, r.designArea, ro.digits), id = esc(r.id);
+    return `<article class="record selectable ${state.selected.has(r.id) ? "selected" : ""}"><label class="record-check" aria-label="${esc(r.name)}を合計に含める"><input type="checkbox" class="record-checkbox" data-select="${id}" ${state.selected.has(r.id) ? "checked" : ""}></label><div class="record-main"><button type="button" data-edit="${id}"><div class="record-name">${esc(r.name)}</div><div class="record-meta">${esc(r.date)} ｜ ${r.shapes.length}図形${diff ? `<br>設計比 ${diff}` : ""}${r.memo ? `<br>${esc(r.memo)}` : ""}</div></button></div><div><div class="record-area">${fmt(total, ro.digits)} <small>m²</small></div><div class="history-buttons"><button type="button" data-pdf="${id}">PDF</button><button type="button" data-edit="${id}">編集</button><button type="button" class="delete" data-delete="${id}">削除</button></div></div></article>`;
   }).join("");
+  renderSelection();
+}
+// 保存履歴で選んだ図面の合計。各図面の合計（保存時の丸め方で確定した値）を足す
+function renderSelection() {
+  const picked = state.records.filter(r => state.selected.has(r.id)), bar = $("selectionBar");
+  bar.classList.toggle("hidden", !state.records.length);
+  $("selectAllButton").textContent = picked.length === state.records.length && picked.length ? "選択を解除" : "すべて選択";
+  if (!picked.length) { $("selectionText").innerHTML = "図面にチェックを入れると、合計を表示します"; return; }
+  const digits = Math.max(...picked.map(r => recordRounding(r).digits));
+  const total = Number(picked.reduce((s, r) => s + recordTotal(r), 0).toFixed(digits));
+  const allDesign = picked.every(r => r.designArea > 0), design = picked.reduce((s, r) => s + (r.designArea || 0), 0);
+  $("selectionText").innerHTML = `<span>${picked.length}件を選択</span><strong>合計 ${fmt(total, digits)} m²</strong>${allDesign ? `<span>設計 ${fmt(design, digits)} m² ／ 差 ${diffText(total, design, digits)}</span>` : ""}`;
 }
 function switchView(view) {
   document.querySelectorAll(".tab").forEach(b => b.classList.toggle("active", b.dataset.view === view));
@@ -560,19 +671,20 @@ function printRecord(record = null) {
   const design = num("designArea");
   const r = record || { name: $("name").value.trim() || "未保存の図面", date: $("date").value || today(), designArea: design > 0 ? design : null, memo: $("memo").value.trim(), shapes: state.shapes };
   if (!r.shapes.length) return;
-  const viewBox = viewBoxFor(r.shapes.flatMap(s => s.points)), vertices = vertexList(r.shapes), total = computeTotal(r.shapes), diff = diffText(total, r.designArea);
+  const ro = record ? recordRounding(record) : currentRounding(); // 保存した記録は保存時の丸め方で出す
+  const viewBox = viewBoxFor(r.shapes.flatMap(s => s.points)), vertices = vertexList(r.shapes), total = computeTotal(r.shapes, ro), diff = diffText(total, r.designArea, ro.digits);
   const svg = `<svg class="print-svg" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">${svgMarkup(r.shapes, { viewBox })}</svg>`;
-  $("printSheet").innerHTML = `<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table><thead><tr><th>No.</th><th>図形</th><th>頂点</th><th>寸法</th><th>面積</th></tr></thead><tbody>${r.shapes.map((s, i) => `<tr><td>${i + 1}</td><td>${s.type === "triangle" ? "三角形" : "台形"}</td><td>${shapeVertexText(s, vertices)}</td><td>${esc(dimensionText(s))}</td><td>${fmt(roundArea(s.area))} m²</td></tr>`).join("")}</tbody></table><div class="print-total">合計面積 ${fmt(total)} m²</div>${r.designArea ? `<div class="print-design">設計面積 ${fmt(r.designArea)} m² ／ 差 ${diff}</div>` : ""}<div class="print-rounding">${roundingNote()}</div>${r.memo ? `<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>` : ""}<footer>現場面積ノート</footer>`;
+  $("printSheet").innerHTML = `<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table><thead><tr><th>No.</th><th>図形</th><th>頂点</th><th>寸法</th><th>面積</th></tr></thead><tbody>${r.shapes.map((s, i) => `<tr><td>${i + 1}</td><td>${s.type === "triangle" ? "三角形" : "台形"}</td><td>${shapeVertexText(s, vertices)}</td><td>${esc(dimensionText(s))}</td><td>${fmt(roundArea(s.area, ro), ro.digits)} m²</td></tr>`).join("")}</tbody></table><div class="print-total">合計面積 ${fmt(total, ro.digits)} m²</div>${r.designArea ? `<div class="print-design">設計面積 ${fmt(r.designArea, ro.digits)} m² ／ 差 ${diff}</div>` : ""}<div class="print-rounding">${roundingNote(ro)}</div>${r.memo ? `<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>` : ""}<footer>現場面積ノート</footer>`;
   window.print();
 }
 function download(name, content, type) { const blob = new Blob([content], { type }), url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 500); }
 function csvCell(v) { return `"${String(v ?? "").replace(/"/g, '""')}"`; }
 function exportCsv() {
   if (!state.records.length) return showToast("出力する記録がありません");
-  const head = ["名称・測点名", "日付", "図形数", "合計面積(m²)", "設計面積(m²)", "差(m²)", "比率(%)", "メモ"];
+  const head = ["名称・測点名", "日付", "図形数", "合計面積(m²)", "設計面積(m²)", "差(m²)", "比率(%)", "面積の丸め", "メモ"];
   const rows = state.records.map(r => {
-    const total = computeTotal(r.shapes), d = designDiff(total, r.designArea);
-    return [r.name, r.date, r.shapes.length, total.toFixed(state.settings.digits), r.designArea ?? "", d ? d.diff.toFixed(state.settings.digits) : "", d ? d.ratio.toFixed(2) : "", r.memo].map(csvCell).join(",");
+    const ro = recordRounding(r), total = recordTotal(r), d = designDiff(total, r.designArea, ro.digits);
+    return [r.name, r.date, r.shapes.length, total.toFixed(ro.digits), r.designArea ?? "", d ? d.diff.toFixed(ro.digits) : "", d ? d.ratio.toFixed(2) : "", roundingText(ro), r.memo].map(csvCell).join(",");
   });
   download(`現場面積_${today()}.csv`, "﻿" + [head.map(csvCell).join(","), ...rows].join("\r\n"), "text/csv;charset=utf-8");
 }
@@ -580,11 +692,13 @@ function exportJson() { download(`現場面積バックアップ_${today()}.json
 async function importJson(file) {
   try {
     const data = JSON.parse(await file.text());
-    if (!data || !Array.isArray(data.records) || !data.records.every(r => r.id && r.name && Array.isArray(r.shapes))) throw Error();
+    if (!data || !Array.isArray(data.records)) throw Error();
+    const valid = data.records.map(sanitizeRecord).filter(Boolean), skipped = data.records.length - valid.length;
+    if (!valid.length) throw Error();
     const map = new Map(state.records.map(r => [r.id, r]));
-    data.records.forEach(r => map.set(r.id, r));
+    valid.forEach(r => map.set(r.id, r));
     state.records = [...map.values()].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-    persist(); renderHistory(); showToast(`${data.records.length}件を復元しました`);
+    persist(); renderHistory(); showToast(`${valid.length}件を復元しました${skipped ? `（${skipped}件は形式が正しくないため読み込みませんでした）` : ""}`);
   } catch { showToast("このバックアップは読み込めません"); }
   finally { $("importJsonInput").value = ""; }
 }
@@ -630,12 +744,17 @@ function setupVoiceButtons() {
 setupVoiceButtons();
 document.querySelectorAll(".mode").forEach(b => b.addEventListener("click", () => setMode(b.dataset.mode)));
 document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => switchView(b.dataset.view)));
-$("quickInput").addEventListener("input", applyQuickInput);
+$("quickInput").addEventListener("input", e => {
+  const prev = state.lastQuick, now = $("quickInput").value;
+  logVoice(`入力(${e.inputType || "-"}) +${now.length - prev.length}字: "${now.slice(-40)}"`);
+  skipDuplicatedInsert(prev, now);
+  applyQuickInput();
+});
 // 入力欄から離れたら（音声入力が終わったら）、合図で使い終わった文字を消して残りだけにする
 $("quickInput").addEventListener("blur", () => {
-  if (state.usedSignal < 0) return;
+  if (!state.signal.added) return;
   const rest = activeQuickText().replace(/^[\s、。,.!！?？]+/, "");
-  state.usedSignal = -1; $("quickInput").value = rest; applyQuickInput();
+  resetSignalSession(); $("quickInput").value = rest; logVoice(`入力欄から離れたので整理: "${rest}"`); applyQuickInput();
 });
 $("quickInput").addEventListener("keydown", e => {
   if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
@@ -695,12 +814,24 @@ $("historyList").addEventListener("click", e => {
   if (pdf) { const r = state.records.find(x => x.id === pdf.dataset.pdf); if (r) printRecord(r); }
   if (del) ask("図面を削除しますか？", "削除した図面は元に戻せません。", () => { state.records = state.records.filter(r => r.id !== del.dataset.delete); persist(); renderHistory(); showToast("図面を削除しました"); });
 });
+$("historyList").addEventListener("change", e => {
+  const box = e.target.closest("[data-select]"); if (!box) return;
+  if (box.checked) state.selected.add(box.dataset.select); else state.selected.delete(box.dataset.select);
+  box.closest(".record").classList.toggle("selected", box.checked);
+  renderSelection();
+});
+$("selectAllButton").addEventListener("click", () => {
+  const all = state.records.length && state.records.every(r => state.selected.has(r.id));
+  state.selected = all ? new Set() : new Set(state.records.map(r => r.id));
+  renderHistory();
+});
 $("cancelConfirmButton").addEventListener("click", () => $("confirmDialog").close());
 $("acceptConfirmButton").addEventListener("click", () => { const fn = state.confirmAction; $("confirmDialog").close(); state.confirmAction = null; if (fn) fn(); });
 $("exportCsvButton").addEventListener("click", exportCsv);
 $("exportJsonButton").addEventListener("click", exportJson);
 $("importJsonInput").addEventListener("change", e => e.target.files[0] && importJson(e.target.files[0]));
-$("settingsButton").addEventListener("click", () => { renderWakeStatus(); $("settingsDialog").showModal(); });
+$("settingsButton").addEventListener("click", () => { renderWakeStatus(); $("voiceLog").textContent = state.voiceLog.join("\n") || "（まだ記録はありません）"; $("settingsDialog").showModal(); });
+$("copyVoiceLog").addEventListener("click", async () => { try { await navigator.clipboard.writeText(state.voiceLog.join("\n")); showToast("記録をコピーしました"); } catch { showToast("コピーできませんでした。画面を撮影してください"); } });
 $("closeSettingsButton").addEventListener("click", () => $("settingsDialog").close());
 $("outdoorButton").addEventListener("click", () => changeSetting("outdoor", !state.settings.outdoor));
 $("setDigits").addEventListener("change", e => changeSetting("digits", Number(e.target.value)));
