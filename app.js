@@ -387,7 +387,8 @@ function updateQuickNumbers() {
   const el = $("quickNumbers");
   const active = activeQuickText(); // 合図で使い終わった部分より後ろ（今の図形の寸法）だけ
   if (!active.replace(/^[\s、。,.!！?？]+/, "").trim()) { el.innerHTML = ""; return; }
-  const values = parseLengths(active);
+  const values = parseQuick(active);
+  el.classList.toggle("guessed", values.glued || !!state.signal.hold); // つながった数を分けたときは色を変えて、確認が要ることを示す
   el.innerHTML = values.length ? values.map(v => `<span>${fmtLen(v)}</span>`).join("") : '<span class="qn-wait">…</span>'; // 数字が無い言葉だけのときは「…」
 }
 
@@ -425,6 +426,11 @@ function updateQuickHint() {
 // 入力のたびに先頭から数え直す。書き直しで数が減っても追加し直さない。
 // barrier: 二重入力を読み飛ばしたときの区切り（その時点の合図の数と、それまでに使ったまとまりの数）
 function resetSignalSession() { state.signal = { needs: [], added: 0, barrier: null }; }
+// 全画面の入力欄の数を読む。音声入力のときだけ、速く話してつながった数（3.12.13.0）を分ける。分けたときは values.glued = true
+function parseQuick(text) {
+  const opts = { splitGlued: state.settings.measureKeyboard !== "numeric" }, values = parseLengths(text, opts);
+  values.glued = !!opts.glued; return values;
+}
 function signalGroups(text, limit = Infinity) {
   const signals = findSignals(text), barrier = state.signal.barrier;
   let groups = [], rest = 0, from = 0;
@@ -436,7 +442,7 @@ function signalGroups(text, limit = Infinity) {
   for (const sig of signals.slice(from)) {
     if (groups.length >= limit) break;
     const need = state.signal.needs[groups.length] ?? quickTargets().length;
-    const values = parseLengths(text.slice(rest, sig.index));
+    const values = parseQuick(text.slice(rest, sig.index));
     if (values.length < need) continue; // 1つ目の数字の後の合図などは、次の数字を待つ
     groups.push(values); rest = sig.end; // 数が多いときもそのまま渡し、processSignals で追加を止める
   }
@@ -454,6 +460,12 @@ function processSignals() {
   const k = state.signal.added, { groups } = signalGroups($("quickInput").value, k + 1);
   if (groups.length <= k) return false;
   const targets = quickTargets(), values = groups[k];
+  if (values.glued || state.signal.hold) {
+    // つながった数を推測で分けたときは、合図だけでは追加しない（たまたま三角形が成り立つ別の寸法で追加されないように）。分けた数を見せ、「追加」を押してもらう
+    const text = values.map(fmtLen).join(" ");
+    if (state.signal.gluedLogged !== text) { logVoice(`つながった数を分けたので自動追加せず: ${text}`); state.signal.gluedLogged = text; }
+    return false;
+  }
   state.signal.needs[k] = targets.length; state.signal.added = k + 1;
   if (values.length > targets.length) {
     // 合図までに数が多い（騒音で余分な数が入ったなど）ときは、どれが寸法か決められないので追加しない
@@ -495,7 +507,7 @@ function applyQuickInput() {
   }
   if (processSignals()) { state.lastQuick = $("quickInput").value; updateQuickNumbers(); return; }
   state.lastQuick = text;
-  const values = parseLengths(activeQuickText());
+  const values = parseQuick(activeQuickText());
   targets.forEach((id, i) => { $(id).value = values[i] !== undefined ? fmtLen(values[i]) : ""; });
   updateQuickNumbers();
   const chips = quickChips(values);
@@ -503,6 +515,9 @@ function applyQuickInput() {
   if (values.length < targets.length) status = `<span class="quick-status">あと${targets.length - values.length}つ</span>`;
   else if (values.length > targets.length) status = `<span class="quick-status warn">数が${values.length}個あります。最初の${targets.length}個を使います</span>`;
   else status = `<span class="quick-status ok">✓ そろいました（${state.settings.signalAdd ? "「はい」「OK」" : "改行キー"}か「追加」で追加）</span>`;
+  if (values.glued || state.signal.hold) status = values.length > targets.length
+    ? `<span class="quick-status warn">数がつながって聞こえたので分けましたが、数が${values.length}個あります。入力欄を空にしてから言い直してください</span>`
+    : `<span class="quick-status warn">数がつながって聞こえたので分けました。合っていれば「追加」を押してください（違うときは入力欄を空にしてから言い直し）</span>`;
   $("quickParsed").innerHTML = chips + status;
   updatePreview();
 }
@@ -580,17 +595,21 @@ function setMode(mode) {
   clearInputs(); updateQuickHint(); updatePreview();
 }
 function swapAB() {
-  const values = parseLengths(activeQuickText());
+  const values = parseQuick(activeQuickText());
   if (values.length >= 2) {
     [values[0], values[1]] = [values[1], values[0]];
+    const hold = values.glued || !!state.signal.hold;
     $("quickInput").value = values.map(fmtLen).join(" "); resetSignalSession();
+    if (hold) state.signal.hold = true; // 推測で分けた数は、入れ替えた後も（何度入れ替えても）確認待ちのまま（合図だけでは追加しない）
     applyQuickInput();
   } else {
     const a = $("sideA").value; $("sideA").value = $("sideB").value; $("sideB").value = a;
     updatePreview();
   }
-  showToast("a と b を入れ替えました");
+  // 大きなお知らせは図面の数字を隠すので出さず、押したボタンと a・b の寸法を一瞬光らせる
+  tapFlash(measureOpen() ? $("measureSwap") : $("swapButton"), ...document.querySelectorAll("#quickParsed .chip:nth-child(-n+2)"), $("sideA"), $("sideB"));
 }
+function tapFlash(...els) { els.forEach(el => { if (!el) return; el.classList.remove("tap-flash"); void el.offsetWidth; el.classList.add("tap-flash"); }); }
 function undoLast() {
   ask("最後の図形を戻しますか？", "最後に追加した図形と、その接続を削除します。", () => { state.shapes.pop(); refresh(); showToast("最後の図形を戻しました"); if (measureOpen()) focusQuick(); });
 }
@@ -599,6 +618,11 @@ function undoLast() {
 // auto: 合図で追加したとき。音声入力の最中なので入力欄の文字は書き換えない（iPhone で文字が二重になるのを防ぐ）
 function addShape({ auto = false } = {}) {
   let cand;
+  if (!auto && $("quickInput").value.trim()) {
+    // 推測で分けた数が必要な数より多いときは、どれが寸法か分からないので「追加」でも追加しない
+    const values = parseQuick(activeQuickText());
+    if ((values.glued || state.signal.hold) && values.length > quickTargets().length) { $("message").textContent = "数がつながって聞こえたので分けましたが、数が多すぎます。入力欄を空にしてから言い直してください。"; showToast("追加できません：入力欄を空にしてから言い直してください"); return false; }
+  }
   try { cand = buildCandidate(); }
   catch (e) { $("message").textContent = e.message; if (auto) { state.autoError = e.message; showToast(`追加できません：${e.message} 読み直してください`); } return false; }
   const editing = editingShape();
@@ -815,6 +839,44 @@ function switchView(view) {
   if (view === "history") renderHistory();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
+// ---------- PDF の算出根拠（v13.0） ----------
+// 各図形の面積を、どの式にどの値を入れて出したかを PDF の表に書く（三角形はヘロンの公式、台形は台形の公式）。計算は丸める前の値で行い、最後に面積の丸め方で丸める
+const BASIS_NOTE = "算出根拠：寸法の単位は m、面積は m²。三角形はヘロンの公式 A = √(S × (S − a) × (S − b) × (S − c))、S = (a + b + c) ÷ 2（S は周の長さの半分）。台形は A = (上底 + 下底) × 高さ ÷ 2。a・b・c の後ろの（B–C）などは図面の頂点です。途中の値は小数第4位まで（0.01 未満は有効数字3桁まで）の表示で、表示を丸めたところは「≒」で結んでいます。計算は丸める前の値で行い、面積は下の「面積の丸め」に従って丸めています。";
+// 途中の値: 小数第4位まで。0.01 未満の小さな値は有効数字3桁まで出す（0 と表示されて、成り立たない三角形に見えないように）
+function calcText(v) { const a = Math.abs(v), d = a > 0 && a < 0.01 ? Math.min(12, 2 - Math.floor(Math.log10(a))) : 4; return String(Number(Number(v).toFixed(d))); }
+function calcEq(v) { return Math.abs(Number(calcText(v)) - v) < 1e-12 ? "=" : "≒"; } // 表示を丸めたら「≒」
+// 辺の長さ: 入力した寸法は小数第3位まで。接続辺のように図面から決まる長さで端数があるときは小数第6位まで出す
+function lenText(v) { return Math.abs(v - Number(v.toFixed(3))) < 1e-9 ? fmtLen(v) : String(Number(v.toFixed(6))); }
+// PDF の寸法: どの辺かを頂点の名前で添える（三角形の点は [c の始点, c の終点, 頂点]、台形は [下底の始点, 下底の終点, 上底の終点, 上底の始点]）
+function printDimensionText(s, vertices) {
+  const n = s.points.map(p => vertexNameOf(p, vertices)), d = s.dimensions;
+  return s.type === "triangle"
+    ? `a ${lenText(d.a)}m（${n[1]}–${n[2]}）/ b ${lenText(d.b)}m（${n[0]}–${n[2]}）/ c ${lenText(d.c)}m（${n[0]}–${n[1]}）`
+    : `上底 ${lenText(d.top)}m（${n[3]}–${n[2]}）/ 下底 ${lenText(d.bottom)}m（${n[0]}–${n[1]}）/ 高さ ${lenText(d.height)}m`;
+}
+// 面積の結果: 丸める前の値を出し、丸めで変わるときは「≒ 丸めた面積」を続ける
+function areaResult(raw, ro) {
+  const rounded = roundArea(raw, ro), shown = calcText(raw);
+  // 丸めても値が変わらないときは、面積の桁数で書く（「= 6.000 m²」）
+  return Number(shown) === rounded ? `${calcEq(raw)} ${fmt(rounded, ro.digits)} m²` : `${calcEq(raw)} ${shown} ≒ ${fmt(rounded, ro.digits)} m²`;
+}
+function areaBasis(s, ro) {
+  const d = s.dimensions;
+  if (s.type === "triangle") {
+    const S = (d.a + d.b + d.c) / 2, f = [S, S - d.a, S - d.b, S - d.c], P = f.reduce((x, y) => x * y, 1);
+    const eqP = f.every(v => calcEq(v) === "=") && calcEq(P) === "=" && Math.abs(f.map(v => Number(calcText(v))).reduce((x, y) => x * y, 1) - Number(calcText(P))) < 1e-9 ? "=" : "≒";
+    return `S = (${lenText(d.a)} + ${lenText(d.b)} + ${lenText(d.c)}) ÷ 2 ${calcEq(S)} ${calcText(S)}<br>A = √(${f.map(calcText).join(" × ")}) ${eqP} √${calcText(P)} ${areaResult(Math.sqrt(P), ro)}`;
+  }
+  return `A = (${lenText(d.top)} + ${lenText(d.bottom)}) × ${lenText(d.height)} ÷ 2 ${areaResult((d.top + d.bottom) * d.height / 2, ro)}`;
+}
+// 合計の根拠。「図形ごとに丸めて合計」は丸めた面積の和、「合計してから丸め」は丸める前の面積の和を丸める（どちらも追算できるように）
+function totalBasis(shapes, ro, total) {
+  if (ro.sumMode === "each") return `合計 = ${shapes.map(s => fmt(roundArea(s.area, ro), ro.digits)).join(" + ")} = ${fmt(total, ro.digits)} m²（図形ごとに丸めてから合計）`;
+  const raw = shapes.reduce((x, s) => x + s.area, 0), parts = shapes.map(s => calcText(s.area)), shown = calcText(raw), rounded = roundArea(raw, ro);
+  // 足す各面積も合計も表示を丸めておらず、表示した値の和が表示した合計と一致するときだけ「=」
+  const exact = shapes.every(s => calcEq(s.area) === "=") && calcEq(raw) === "=" && Math.abs(parts.reduce((x, p) => x + Number(p), 0) - Number(shown)) < 1e-9;
+  return `合計 = ${parts.join(" + ")} ${exact ? "=" : "≒"} ${Number(shown) === rounded ? fmt(rounded, ro.digits) : `${shown} ≒ ${fmt(rounded, ro.digits)}`} m²（丸める前の値で合計してから丸め）`;
+}
 function printRecord(record = null) {
   const design = designNum();
   const r = record || { name: $("name").value.trim() || "未保存の図面", date: $("date").value || today(), designArea: design > 0 ? design : null, memo: $("memo").value.trim(), shapes: state.shapes };
@@ -822,7 +884,7 @@ function printRecord(record = null) {
   const ro = record ? recordRounding(record) : currentRounding(); // 保存した記録は保存時の丸め方で出す
   const viewBox = viewBoxFor(r.shapes.flatMap(s => s.points)), vertices = vertexList(r.shapes), total = computeTotal(r.shapes, ro), diff = diffText(total, r.designArea, ro.digits);
   const svg = `<svg class="print-svg" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">${svgMarkup(r.shapes, { viewBox })}</svg>`;
-  $("printSheet").innerHTML = `<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table><thead><tr><th>No.</th><th>図形</th><th>頂点</th><th>寸法</th><th>面積</th></tr></thead><tbody>${r.shapes.map((s, i) => `<tr><td>${i + 1}</td><td>${s.type === "triangle" ? "三角形" : "台形"}</td><td>${shapeVertexText(s, vertices)}</td><td>${esc(dimensionText(s))}</td><td>${fmt(roundArea(s.area, ro), ro.digits)} m²</td></tr>`).join("")}</tbody></table><div class="print-total">合計面積 ${fmt(total, ro.digits)} m²</div>${r.designArea ? `<div class="print-design">設計面積 ${fmt(r.designArea, ro.digits)} m² ／ 差 ${diff}</div>` : ""}<div class="print-rounding">${roundingNote(ro)}</div>${r.memo ? `<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>` : ""}<footer>現場面積ノート</footer>`;
+  $("printSheet").innerHTML = `<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table><thead><tr><th>No.</th><th>図形</th><th>頂点</th><th>寸法</th><th>算出根拠</th><th>面積</th></tr></thead><tbody>${r.shapes.map((s, i) => `<tr><td>${i + 1}</td><td>${s.type === "triangle" ? "三角形" : "台形"}</td><td>${shapeVertexText(s, vertices)}</td><td>${esc(printDimensionText(s, vertices))}</td><td class="print-basis">${areaBasis(s, ro)}</td><td class="print-area">${fmt(roundArea(s.area, ro), ro.digits)} m²</td></tr>`).join("")}</tbody></table><p class="print-basis-note">${BASIS_NOTE}</p><div class="print-total">合計面積 ${fmt(total, ro.digits)} m²</div><div class="print-total-basis">${totalBasis(r.shapes, ro, total)}</div>${r.designArea ? `<div class="print-design">設計面積 ${fmt(r.designArea, ro.digits)} m² ／ 差 ${diff}</div>` : ""}<div class="print-rounding">${roundingNote(ro)}</div>${r.memo ? `<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>` : ""}<footer>現場面積ノート</footer>`;
   window.print();
 }
 function download(name, content, type) { const blob = new Blob([content], { type }), url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 500); }
@@ -913,7 +975,7 @@ $("quickInput").addEventListener("blur", () => {
 $("quickInput").addEventListener("keydown", e => {
   if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
   e.preventDefault();
-  if (parseLengths(activeQuickText()).length >= quickTargets().length) addShape();
+  if (parseQuick(activeQuickText()).length >= quickTargets().length) addShape();
 });
 DIMENSION_FIELDS.forEach(id => {
   $(id).addEventListener("input", () => {

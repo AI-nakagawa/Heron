@@ -151,3 +151,29 @@ body.outdoor .measure-overlay.compact .measure-input-row #quickInput,body.outdoo
 .measure-overlay.numbers-only #quickInput{color:transparent;-webkit-text-fill-color:transparent;caret-color:transparent}
 .measure-overlay.numbers-only #quickInput::placeholder{color:#9aa69f;-webkit-text-fill-color:#9aa69f}
 body.outdoor .quick-numbers{font-size:26px}
+
+/* v12.9: 全画面入力中は後ろの画面を隠す。iPhone のキーボードは半透明なので、全画面の外（キーボードの後ろや周り）から後ろの図面が透けて見えていた */
+body.measuring{background:var(--paper)}
+body.measuring > .app-header,body.measuring > main{visibility:hidden}
+.measure-overlay{box-shadow:0 0 0 100vmax var(--paper)}
+/* a・b の入れ替えなどは、大きなお知らせを出さず、押したボタンと寸法を一瞬光らせるだけにする */
+@keyframes tapFlash{0%{background:var(--lime);color:var(--green);border-color:var(--lime)}100%{}}
+.tap-flash{animation:tapFlash .45s ease-out}
+/* つながった数を推測で分けたときは、数字の色を変えて確認が要ることを示す */
+.quick-numbers.guessed{color:#b0560f}
+
+/* v13.0: PDF に面積の算出根拠（ヘロンの公式など）を出す */
+@media print{
+  html,body{background:#fff!important;min-height:0!important}
+  #printSheet .print-svg{height:108mm} /* 算出根拠の列で表が長くなった分、図面を少し低くして1ページに収める */
+  #printSheet table{font-size:8.5pt}
+  #printSheet th,#printSheet td{padding:1.5mm 2mm}
+  #printSheet tr{break-inside:avoid}
+  #printSheet td:nth-child(1){width:7mm}
+  #printSheet td:nth-child(2),#printSheet td:nth-child(3){white-space:nowrap}
+  #printSheet td:nth-child(4){width:42mm}
+  #printSheet td.print-basis{font-size:8pt;line-height:1.55;word-break:break-word}
+  #printSheet td.print-area{white-space:nowrap;text-align:right;font-weight:700}
+  #printSheet .print-basis-note{font-size:7.5pt;color:#444;margin:1.5mm 0 0;line-height:1.5}
+  #printSheet .print-total-basis{text-align:right;font-size:8.5pt;color:#333;margin-top:1mm}
+}

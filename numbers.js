@@ -26,11 +26,31 @@ function isWordPart(ch) { return !!ch && OTHER_KANJI.test(ch) && !NUMERAL_KANJI.
 // 面積の単位（㎡・m²・平米・平方メートル）は数値の一部ではないので、NFKC で ㎡→m2 になる前に除く（「100㎡」を 100.02 と読まないように）
 const AREA_UNIT_RE = /\s*(?:㎡|[mｍ]\s*²|平方メートル|平米)/g;
 
-function normalizeSpokenNumbers(text) {
+// 速く話すと、iPhone の音声入力は数の間に区切りを入れず「3.1 2.1 3.0」を「3.12.13.0」のようにつなげることがある。
+// 小数点が2つ以上ある数は、つながった数とみなし、小数点以下を2桁まで（センチまで）として分ける。
+//   3.12.13.0 → 3.1 2.1 3.0（点の間が2桁なら、1桁目が前の数の小数・2桁目が次の数の整数）
+//   3.014.253 → 3.01 4.25 3（点の間が3桁以上なら、2桁が前の数の小数・残りが次の数の整数。最後も小数2桁より後ろは次の数）
+// 点の間が1桁（「3.4.5」）は分け方が決められないので、そのままにする
+function splitGluedDecimals(run) {
+  const parts = run.split("."), out = [];
+  let int = parts[0];
+  for (let i = 1; i < parts.length; i++) {
+    const seg = parts[i];
+    if (i === parts.length - 1) { out.push(`${int}.${seg.slice(0, 2)}`); if (seg.length > 2) out.push(seg.slice(2)); break; }
+    if (seg.length < 2) return run;
+    const dec = Math.min(2, seg.length - 1);
+    out.push(`${int}.${seg.slice(0, dec)}`); int = seg.slice(dec);
+  }
+  return ` ${out.join(" ")} `;
+}
+// opts.splitGlued: つながった数を分ける（全画面の音声入力だけで使う）。分けたときは opts.glued = true にする
+function normalizeSpokenNumbers(text, opts = {}) {
   let s = String(text ?? "").replace(AREA_UNIT_RE, " ").normalize("NFKC").replace(/てん|ポイント/g, "点").replace(/ゼロ/g, "〇");
   // 「三点〇一」: 点の前は位取り、点の後は1桁ずつ読む
   s = s.replace(/([〇零一二三四五六七八九十百千0-9]+)\s*点\s*([〇零一二三四五六七八九0-9]+)/g, (_, a, b) => `${kanjiInteger(a)}.${digitwise(b)}`);
   s = s.replace(/[〇零一二三四五六七八九十百千]+/g, (k, at, all) => isWordPart(all[at - 1]) || isWordPart(all[at + k.length]) ? " " : kanjiInteger(k));
+  s = s.replace(/(?<=\d)点(?=\d)/g, "."); // 「3点12点13点0」のように続いた点も小数点にする（下でまとめて分ける）
+  if (opts.splitGlued) s = s.replace(/(?<![\d.])\d+(?:\.\d+){2,}(?!\.?\d)/g, run => { const out = splitGluedDecimals(run); if (out !== run) opts.glued = true; return out; });
   // 「1回」「1つ目」「2度」のような回数・順番は寸法ではないので除く
   s = s.replace(/(?<![\d.])\d+(?:\.\d+)?\s*(?:回|度|番|個|本|枚|人|つ|目|か所|箇所|ヶ所)/g, " ");
   // 「3メートル5センチ」→ 3.05（センチと言ったときは、後ろの数値をセンチとして扱う）
@@ -45,8 +65,8 @@ function normalizeSpokenNumbers(text) {
 
 // 「.5」は 0.5 と読む。先頭や空白の後の「-」「−」は負の数として返し、寸法の検査で弾く（「3-4-5」のような区切りの「-」はそのまま区切り）
 // 「- 3」のように負号と数値の間に空白があっても負の数とする（正の 3 として追加しないように）
-function parseLengths(text) {
-  const s = normalizeSpokenNumbers(text), values = [];
+function parseLengths(text, opts) {
+  const s = normalizeSpokenNumbers(text, opts), values = [];
   for (const m of s.matchAll(/(?<![\d.])(?:\d+(?:\.\d+)?|\.\d+)/g)) {
     const negative = /(?:^|[\s、,(（])[-−]\s*$/.test(s.slice(0, m.index));
     values.push((negative ? -1 : 1) * Number(m[0]));
