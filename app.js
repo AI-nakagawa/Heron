@@ -841,7 +841,6 @@ function switchView(view) {
 }
 // ---------- PDF の算出根拠（v13.0） ----------
 // 各図形の面積を、どの式にどの値を入れて出したかを PDF の表に書く（三角形はヘロンの公式、台形は台形の公式）。計算は丸める前の値で行い、最後に面積の丸め方で丸める
-const BASIS_NOTE = "算出根拠：寸法の単位は m、面積は m²。三角形はヘロンの公式 A = √(S × (S − a) × (S − b) × (S − c))、S = (a + b + c) ÷ 2（S は周の長さの半分）。台形は A = (上底 + 下底) × 高さ ÷ 2。a・b・c の後ろの（B–C）などは図面の頂点です。途中の値は小数第4位まで（0.01 未満は有効数字3桁まで）の表示で、表示を丸めたところは「≒」で結んでいます。計算は丸める前の値で行い、面積は下の「面積の丸め」に従って丸めています。";
 // 途中の値: 小数第4位まで。0.01 未満の小さな値は有効数字3桁まで出す（0 と表示されて、成り立たない三角形に見えないように）
 function calcText(v) { const a = Math.abs(v), d = a > 0 && a < 0.01 ? Math.min(12, 2 - Math.floor(Math.log10(a))) : 4; return String(Number(Number(v).toFixed(d))); }
 function calcEq(v) { return Math.abs(Number(calcText(v)) - v) < 1e-12 ? "=" : "≒"; } // 表示を丸めたら「≒」
@@ -869,13 +868,12 @@ function areaBasis(s, ro) {
   }
   return `A = (${lenText(d.top)} + ${lenText(d.bottom)}) × ${lenText(d.height)} ÷ 2 ${areaResult((d.top + d.bottom) * d.height / 2, ro)}`;
 }
-// 合計の根拠。「図形ごとに丸めて合計」は丸めた面積の和、「合計してから丸め」は丸める前の面積の和を丸める（どちらも追算できるように）
+// 合計の根拠（v13.1）: 表の「面積」の列と同じ、丸めた各面積を面積の桁数（既定は小数第3位）で並べる。
+// 「合計してから丸め」では、並べた値の和と合計が端数で合わないことがあるので、そのときは「≒」にする
 function totalBasis(shapes, ro, total) {
-  if (ro.sumMode === "each") return `合計 = ${shapes.map(s => fmt(roundArea(s.area, ro), ro.digits)).join(" + ")} = ${fmt(total, ro.digits)} m²（図形ごとに丸めてから合計）`;
-  const raw = shapes.reduce((x, s) => x + s.area, 0), parts = shapes.map(s => calcText(s.area)), shown = calcText(raw), rounded = roundArea(raw, ro);
-  // 足す各面積も合計も表示を丸めておらず、表示した値の和が表示した合計と一致するときだけ「=」
-  const exact = shapes.every(s => calcEq(s.area) === "=") && calcEq(raw) === "=" && Math.abs(parts.reduce((x, p) => x + Number(p), 0) - Number(shown)) < 1e-9;
-  return `合計 = ${parts.join(" + ")} ${exact ? "=" : "≒"} ${Number(shown) === rounded ? fmt(rounded, ro.digits) : `${shown} ≒ ${fmt(rounded, ro.digits)}`} m²（丸める前の値で合計してから丸め）`;
+  const parts = shapes.map(s => roundArea(s.area, ro));
+  const eq = Math.abs(Number(parts.reduce((x, p) => x + p, 0).toFixed(ro.digits)) - total) < 1e-9 ? "=" : "≒";
+  return `合計 = ${parts.map(p => fmt(p, ro.digits)).join(" + ")} ${eq} ${fmt(total, ro.digits)} m²`;
 }
 function printRecord(record = null) {
   const design = designNum();
@@ -884,7 +882,7 @@ function printRecord(record = null) {
   const ro = record ? recordRounding(record) : currentRounding(); // 保存した記録は保存時の丸め方で出す
   const viewBox = viewBoxFor(r.shapes.flatMap(s => s.points)), vertices = vertexList(r.shapes), total = computeTotal(r.shapes, ro), diff = diffText(total, r.designArea, ro.digits);
   const svg = `<svg class="print-svg" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">${svgMarkup(r.shapes, { viewBox })}</svg>`;
-  $("printSheet").innerHTML = `<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table><thead><tr><th>No.</th><th>図形</th><th>頂点</th><th>寸法</th><th>算出根拠</th><th>面積</th></tr></thead><tbody>${r.shapes.map((s, i) => `<tr><td>${i + 1}</td><td>${s.type === "triangle" ? "三角形" : "台形"}</td><td>${shapeVertexText(s, vertices)}</td><td>${esc(printDimensionText(s, vertices))}</td><td class="print-basis">${areaBasis(s, ro)}</td><td class="print-area">${fmt(roundArea(s.area, ro), ro.digits)} m²</td></tr>`).join("")}</tbody></table><p class="print-basis-note">${BASIS_NOTE}</p><div class="print-total">合計面積 ${fmt(total, ro.digits)} m²</div><div class="print-total-basis">${totalBasis(r.shapes, ro, total)}</div>${r.designArea ? `<div class="print-design">設計面積 ${fmt(r.designArea, ro.digits)} m² ／ 差 ${diff}</div>` : ""}<div class="print-rounding">${roundingNote(ro)}</div>${r.memo ? `<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>` : ""}<footer>現場面積ノート</footer>`;
+  $("printSheet").innerHTML = `<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table><thead><tr><th>No.</th><th>寸法</th><th>算出根拠</th><th>面積</th></tr></thead><tbody>${r.shapes.map((s, i) => `<tr><td class="print-no">${i + 1}</td><td class="print-dim">${esc(printDimensionText(s, vertices)).split("/ ").map(p => `<span class="nb">${p}</span>`).join("/ ")}</td><td class="print-basis">${areaBasis(s, ro)}</td><td class="print-area">${fmt(roundArea(s.area, ro), ro.digits)} m²</td></tr>`).join("")}</tbody></table><div class="print-total">合計面積 ${fmt(total, ro.digits)} m²</div><div class="print-total-basis">${totalBasis(r.shapes, ro, total)}</div>${r.designArea ? `<div class="print-design">設計面積 ${fmt(r.designArea, ro.digits)} m² ／ 差 ${diff}</div>` : ""}<div class="print-rounding">${roundingNote(ro)}</div>${r.memo ? `<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>` : ""}`;
   window.print();
 }
 function download(name, content, type) { const blob = new Blob([content], { type }), url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 500); }

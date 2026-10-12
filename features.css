@@ -169,11 +169,11 @@ body.measuring > .app-header,body.measuring > main{visibility:hidden}
   #printSheet table{font-size:8.5pt}
   #printSheet th,#printSheet td{padding:1.5mm 2mm}
   #printSheet tr{break-inside:avoid}
-  #printSheet td:nth-child(1){width:7mm}
-  #printSheet td:nth-child(2),#printSheet td:nth-child(3){white-space:nowrap}
-  #printSheet td:nth-child(4){width:42mm}
+  /* v13.1: 列は No.・寸法・算出根拠・面積（図形・頂点の列は削除）。列番号ではなくクラスで幅を決める */
+  #printSheet td.print-no{width:7mm}
+  #printSheet td.print-dim{width:46mm}
+  #printSheet td.print-dim .nb{white-space:nowrap} /* 「a 3.5m（B–D）」の途中で改行しない（「/」の所で改行） */
   #printSheet td.print-basis{font-size:8pt;line-height:1.55;word-break:break-word}
   #printSheet td.print-area{white-space:nowrap;text-align:right;font-weight:700}
-  #printSheet .print-basis-note{font-size:7.5pt;color:#444;margin:1.5mm 0 0;line-height:1.5}
   #printSheet .print-total-basis{text-align:right;font-size:8.5pt;color:#333;margin-top:1mm}
 }
