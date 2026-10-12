@@ -1,10 +1,10 @@
 "use strict";
 const STORAGE_KEY = "field-area-drawings-v2", SETTINGS_KEY = "field-area-settings-v1";
 const THIN_ANGLE_DEG = 20; // これより小さい角を持つ三角形は警告する
-const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true, measureKeyboard: "voice", projectCollapsed: false, signalAdd: true };
+const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true, measureKeyboard: "voice", projectCollapsed: false, signalAdd: true, showRaw: false, measureZoom: true };
 const $ = id => document.getElementById(id);
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, autoError: "", deferredInstall: null, viewBox: "0 0 700 430", savedSnapshot: "", recordBase: null, draftFailed: false, wakeLock: null, wakeLockPending: false, signal: { needs: [], added: 0, barrier: null }, lastQuick: "", voiceLog: [], selected: new Set() };
+const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, autoError: "", deferredInstall: null, viewBox: "0 0 700 430", savedSnapshot: "", zoom: { key: null, points: [] }, recordBase: null, draftFailed: false, wakeLock: null, wakeLockPending: false, signal: { needs: [], added: 0, barrier: null }, lastQuick: "", voiceLog: [], selected: new Set() };
 const FIELD_LABELS = { sideA: "a", sideB: "b", sideC: "c", topBase: "上底", bottomBase: "下底", height: "高さ" };
 const DIMENSION_FIELDS = Object.keys(FIELD_LABELS);
 const mobileDevice = /Android|iPad|iPhone|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 0;
@@ -346,9 +346,49 @@ function renderCanvas(autoFit = false) {
   svg.setAttribute("viewBox", state.viewBox); svg.innerHTML = svgMarkup(state.shapes, { ...opts, viewBox: state.viewBox });
   if (measureOpen()) {
     // 全画面は図面が小さくなりやすいので、余白を詰めて文字を大きめに描く
-    const ghost = state.candidate?.shape, viewBox = viewBoxFor([...state.shapes, ...(ghost ? [ghost] : [])].flatMap(s => s.points), .12);
+    const viewBox = measureViewBox(state.candidate?.shape);
     const big = $("measureCanvas"); big.setAttribute("viewBox", viewBox); big.innerHTML = svgMarkup(state.shapes, { ...opts, viewBox, textScale: 1.6 });
   }
+}
+// ---------- 全画面の拡大表示（v12.8） ----------
+// 詰めた表示（キーボードが出て画面が低いとき）では、図面全体ではなく接続辺のまわりを拡大する。
+// 範囲は辺の選択・追加・反転・表示の切り替えのときだけ決め直し、数字を話すたびには動かさない（点線がはみ出すときだけ広げる）
+function measureZoomOn() { return $("measureOverlay").classList.contains("compact") && state.settings.measureZoom && state.shapes.length >= 2; }
+function focusRegion() {
+  const editing = editingShape();
+  const at = pts => pts.map(p => `${p.x.toFixed(4)},${p.y.toFixed(4)}`).join(" "); // 図形を修正して辺が動いたら、範囲も決め直す（キーに位置を含める）
+  if (editing) return { key: `edit:${editing.id}:${at(editing.points)}`, points: [...editing.points] }; // 修正中は、修正する図形のまわり
+  const edge = lockedEdge(); if (!edge) return null;
+  // 接続辺の両端と、その外側（新しい図形が入るところ）に辺の長さぶん、内側に少しの余白
+  const flip = $("flipDirection").checked, L = dist(edge.a, edge.b);
+  const u = { x: (edge.b.x - edge.a.x) / L, y: (edge.b.y - edge.a.y) / L }, n = outwardNormal(edge, state.shapes, flip), points = [];
+  for (const s of [-0.3, 1.1]) for (const t of [-0.3, 1.3]) points.push({ x: edge.a.x + u.x * L * t + n.x * L * s, y: edge.a.y + u.y * L * t + n.y * L * s });
+  return { key: `edge:${edgeKey(edge)}:${flip}:${at([edge.a, edge.b])}`, points };
+}
+function insideBox(p, points) {
+  const xs = points.map(q => q.x), ys = points.map(q => q.y);
+  return p.x >= Math.min(...xs) && p.x <= Math.max(...xs) && p.y >= Math.min(...ys) && p.y <= Math.max(...ys);
+}
+function measureViewBox(ghost) {
+  const all = [...state.shapes, ...(ghost ? [ghost] : [])].flatMap(s => s.points);
+  const region = measureZoomOn() ? focusRegion() : null;
+  if (!region) return viewBoxFor(all, .12);
+  if (state.zoom.key !== region.key) state.zoom = { key: region.key, points: region.points };
+  if (ghost && ghost.points.some(p => !insideBox(p, state.zoom.points))) state.zoom.points = [...state.zoom.points, ...ghost.points]; // 広げるだけで、狭めない
+  return viewBoxFor(state.zoom.points, .06);
+}
+function toggleMeasureZoom() {
+  state.settings.measureZoom = !state.settings.measureZoom; saveSettings();
+  state.zoom = { key: null, points: [] }; syncMeasureTools(); renderCanvas();
+}
+// 入力欄の文字の代わりに、読み取った数字だけを表示する（入力欄の値は書き換えない。話している最中に書き換えると、iPhone で文字が二重に入るため）
+function applyNumbersOnly() { $("measureOverlay").classList.toggle("numbers-only", state.settings.measureKeyboard !== "numeric" && !state.settings.showRaw); }
+function updateQuickNumbers() {
+  const el = $("quickNumbers");
+  const active = activeQuickText(); // 合図で使い終わった部分より後ろ（今の図形の寸法）だけ
+  if (!active.replace(/^[\s、。,.!！?？]+/, "").trim()) { el.innerHTML = ""; return; }
+  const values = parseLengths(active);
+  el.innerHTML = values.length ? values.map(v => `<span>${fmtLen(v)}</span>`).join("") : '<span class="qn-wait">…</span>'; // 数字が無い言葉だけのときは「…」
 }
 
 // ---------- 入力フォーム ----------
@@ -445,17 +485,20 @@ function logVoice(text) {
   state.voiceLog.push(`${hms} ${text}`);
   if (state.voiceLog.length > 80) state.voiceLog.shift();
 }
+function quickChips(values) { return quickTargets().map((id, i) => `<span class="chip ${values[i] === undefined ? "empty" : ""}">${FIELD_LABELS[id]} ${values[i] !== undefined ? fmtLen(values[i]) : "—"}</span>`).join(""); }
 function applyQuickInput() {
   const text = $("quickInput").value, targets = quickTargets();
   if (!text.trim()) { // 入力欄を空にしたら寸法も消す（前の寸法のまま「追加」されないように）
-    resetSignalSession(); state.lastQuick = text; $("quickParsed").innerHTML = ""; state.autoError = "";
-    targets.forEach(id => { $(id).value = ""; }); updatePreview(); return;
+    resetSignalSession(); state.lastQuick = text; $("quickParsed").innerHTML = quickChips([]); state.autoError = ""; // 空でも「a・b」などの欄は見せる（何を話すか分かるように）
+    state.zoom = { key: null, points: [] }; // 入力欄を空にしたら、広げた拡大範囲も元に戻す（大きな数を読み違えた後など）
+    targets.forEach(id => { $(id).value = ""; }); updateQuickNumbers(); updatePreview(); return;
   }
-  if (processSignals()) { state.lastQuick = $("quickInput").value; return; }
+  if (processSignals()) { state.lastQuick = $("quickInput").value; updateQuickNumbers(); return; }
   state.lastQuick = text;
   const values = parseLengths(activeQuickText());
   targets.forEach((id, i) => { $(id).value = values[i] !== undefined ? fmtLen(values[i]) : ""; });
-  const chips = targets.map((id, i) => `<span class="chip ${values[i] === undefined ? "empty" : ""}">${FIELD_LABELS[id]} ${values[i] !== undefined ? fmtLen(values[i]) : "—"}</span>`).join("");
+  updateQuickNumbers();
+  const chips = quickChips(values);
   let status;
   if (values.length < targets.length) status = `<span class="quick-status">あと${targets.length - values.length}つ</span>`;
   else if (values.length > targets.length) status = `<span class="quick-status warn">数が${values.length}個あります。最初の${targets.length}個を使います</span>`;
@@ -522,7 +565,8 @@ function updatePreview() {
 }
 function clearInputs() {
   DIMENSION_FIELDS.forEach(id => $(id).value = "");
-  $("quickInput").value = ""; $("quickParsed").innerHTML = ""; resetSignalSession(); state.lastQuick = ""; state.autoError = "";
+  $("quickInput").value = ""; $("quickParsed").innerHTML = quickChips([]); updateQuickNumbers(); resetSignalSession(); state.lastQuick = ""; state.autoError = "";
+  state.zoom = { key: null, points: [] };
   $("flipDirection").checked = false;
   document.querySelector('input[name="alignment"][value="center"]').checked = true;
   $("message").textContent = "";
@@ -614,7 +658,7 @@ function refresh() {
   $("printButton").disabled = !has;
   $("canvasHint").textContent = editing ? "点線が修正後の位置です" : has ? "緑色の外周辺をタップして次の接続先を選択" : "最初の図形を追加してください";
   refreshEdgeOptions(); applySharedLength(); updateQuickHint(); renderSummary(); renderParts();
-  if ($("quickInput").value.trim()) applyQuickInput(); else updatePreview();
+  if ($("quickInput").value.trim()) applyQuickInput(); else { $("quickParsed").innerHTML = quickChips([]); updatePreview(); } // 空でも、今の図形で話す寸法の欄（a・b など）を見せる
   saveDraft();
 }
 function renderSummary() {
@@ -640,6 +684,11 @@ function syncMeasureTools() {
   $("measureAdd").textContent = editing ? "修正" : "追加";
   const vertices = vertexList(state.shapes);
   $("measureEdge").textContent = editing ? `図形 ${state.shapes.indexOf(editing) + 1} を修正中` : edge && locked ? `接続辺 ${vertexNameOf(edge.a, vertices)}–${vertexNameOf(edge.b, vertices)}（${fmtLen(dist(edge.a, edge.b))} m）` : "";
+  $("measureEdgeBadge").textContent = $("measureEdge").textContent; // 詰めた表示では説明の行を隠し、図面の上に出す
+  const zoom = $("measureZoom");
+  zoom.classList.toggle("hidden", state.shapes.length < 2);
+  zoom.textContent = state.settings.measureZoom ? "全体" : "拡大";
+  zoom.setAttribute("aria-pressed", String(state.settings.measureZoom));
 }
 function layoutMeasure() {
   if (!measureOpen()) return;
@@ -648,6 +697,9 @@ function layoutMeasure() {
   overlay.style.top = `${top}px`; overlay.style.height = `${height}px`;
   document.documentElement.style.setProperty("--vv-top", `${top}px`);
   document.body.classList.toggle("keyboard-open", window.innerHeight - height > 120);
+  // 見える高さが低いとき（キーボード表示中など）は詰めた表示にする。予測変換の欄などで高さが少し変わっても行き来しないよう、540px 未満で詰め、580px 以上で戻す
+  const was = overlay.classList.contains("compact"), compact = was ? height < 580 : height < 540;
+  if (compact !== was) { overlay.classList.toggle("compact", compact); state.zoom = { key: null, points: [] }; renderCanvas(); } // 入力欄へのフォーカスは触らない
 }
 function setMeasureKeyboard(kind) {
   state.settings.measureKeyboard = kind; saveSettings();
@@ -655,6 +707,7 @@ function setMeasureKeyboard(kind) {
   $("measureKeyboard").textContent = kind === "numeric" ? "🎙あ" : "123";
   $("measureKeyboard").setAttribute("aria-label", kind === "numeric" ? "音声入力できるキーボードに切り替え" : "数字キーボードに切り替え");
   $("measureNext").classList.toggle("hidden", kind !== "numeric");
+  applyNumbersOnly(); // 数字キーボード（手入力）のときは、入力欄の文字をそのまま見せる
 }
 function openMeasure() {
   if (measureOpen()) return;
@@ -809,7 +862,8 @@ function applySettings() {
   document.body.classList.toggle("outdoor", state.settings.outdoor);
   $("outdoorButton").setAttribute("aria-pressed", String(state.settings.outdoor));
   $("setDigits").value = String(state.settings.digits); $("setMethod").value = state.settings.method; $("setSumMode").value = state.settings.sumMode;
-  $("setOutdoor").checked = state.settings.outdoor; $("setWakeLock").checked = state.settings.wakeLock; $("setSignalAdd").checked = state.settings.signalAdd;
+  $("setOutdoor").checked = state.settings.outdoor; $("setWakeLock").checked = state.settings.wakeLock; $("setSignalAdd").checked = state.settings.signalAdd; $("setShowRaw").checked = state.settings.showRaw;
+  applyNumbersOnly();
 }
 function changeSetting(key, value) { state.settings[key] = value; saveSettings(); applySettings(); refresh(); renderHistory(); if (key === "wakeLock") updateWakeLock(); }
 function renderWakeStatus() {
@@ -864,7 +918,7 @@ $("quickInput").addEventListener("keydown", e => {
 DIMENSION_FIELDS.forEach(id => {
   $(id).addEventListener("input", () => {
     // 寸法を手で直したら、全画面入力に残っている文字は使わない（設定の変更などで古い数字に戻らないように）
-    if ($("quickInput").value) { $("quickInput").value = ""; $("quickParsed").innerHTML = ""; resetSignalSession(); state.lastQuick = ""; state.autoError = ""; }
+    if ($("quickInput").value) { $("quickInput").value = ""; $("quickParsed").innerHTML = quickChips([]); updateQuickNumbers(); resetSignalSession(); state.lastQuick = ""; state.autoError = ""; state.zoom = { key: null, points: [] }; }
     $("message").textContent = ""; updatePreview();
   });
   $(id).addEventListener("change", () => { const v = parseLength($(id).value); if (Number.isFinite(v)) $(id).value = fmtLen(v); updatePreview(); });
@@ -952,6 +1006,8 @@ $("setSumMode").addEventListener("change", e => changeSetting("sumMode", e.targe
 $("setOutdoor").addEventListener("change", e => changeSetting("outdoor", e.target.checked));
 $("setWakeLock").addEventListener("change", e => changeSetting("wakeLock", e.target.checked));
 $("setSignalAdd").addEventListener("change", e => changeSetting("signalAdd", e.target.checked));
+$("setShowRaw").addEventListener("change", e => changeSetting("showRaw", e.target.checked));
+$("measureZoom").addEventListener("click", () => { toggleMeasureZoom(); focusQuick(); });
 document.addEventListener("visibilitychange", updateWakeLock);
 document.addEventListener("pointerdown", () => { if (state.settings.wakeLock && !state.wakeLock) updateWakeLock(); }, { passive: true });
 window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); state.deferredInstall = e; $("installButton").classList.remove("hidden"); });

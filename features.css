@@ -116,3 +116,38 @@ body.outdoor .project-summary{min-height:48px}
 .record.selected{outline:2px solid var(--green-2);background:#f1f7f2}
 @media(max-width:560px){.history-list .record.selectable{grid-template-columns:auto 1fr}.history-list .record.selectable>div:last-child{grid-column:2}}
 body.outdoor .record-checkbox{width:30px;height:30px}
+
+/* v12.7: タイトルに版番号を出す（見た目の変わらない更新でも、スマホで新しい版になったか分かるように）。ボタンの文字は折り返さない */
+.app-version{font-size:.72em;font-weight:700;opacity:.85;letter-spacing:0;white-space:nowrap}
+.header-actions{flex-shrink:0}
+.app-header .icon-button{white-space:nowrap}
+
+/* v12.8 全画面入力: 図面を広く、数字を見やすく */
+/* 合計は図面の上に重ねる札にする（縦の場所を取らない） */
+.measure-total{position:absolute;top:6px;left:6px;z-index:2;max-width:calc(100% - 84px);padding:3px 9px;border:1px solid var(--line);border-radius:9px;background:rgba(255,253,247,.93);pointer-events:none}
+.measure-edge-badge{display:none;position:absolute;left:6px;bottom:6px;z-index:2;max-width:calc(100% - 12px);padding:2px 8px;border:1px solid #f0c7ae;border-radius:8px;background:rgba(255,253,247,.93);color:#c4561c;font-size:12px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+.m-zoom{display:none;position:absolute;top:6px;right:6px;z-index:2;min-width:64px;min-height:44px;padding:0 12px;border:1px solid var(--line);border-radius:10px;background:rgba(255,255,255,.96);color:var(--green);font-weight:900;font-size:15px;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.m-zoom[aria-pressed="false"]{background:var(--green);color:#fff;border-color:var(--green)}
+/* 詰めた表示（見える高さが低いとき）: 説明の行を隠して接続辺は図面の上に、余白を詰める。ボタンの高さ（手袋で押せる大きさ）は保つ */
+.measure-overlay.compact .measure-toolbar{padding-top:calc(4px + env(safe-area-inset-top));padding-bottom:4px}
+.measure-overlay.compact .measure-hint{display:none}
+.measure-overlay.compact .measure-edge-badge:not(:empty){display:block}
+.measure-overlay.compact .m-zoom:not(.hidden){display:block}
+.measure-overlay.compact .measure-panel{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;padding-top:4px}
+.measure-overlay.compact .quick-parsed{flex:0 1 auto}
+.measure-overlay.compact .measure-status{flex:1 1 150px;min-width:0;line-height:1.3}
+.measure-overlay.compact .measure-input-row{flex:1 0 100%}
+.measure-overlay.compact .measure-input-row #quickInput,.measure-overlay.compact .m-add,.measure-overlay.compact .measure-panel .m-btn{height:46px;min-height:46px}
+body.outdoor .measure-overlay.compact .measure-input-row #quickInput,body.outdoor .measure-overlay.compact .m-add,body.outdoor .measure-overlay.compact .measure-panel .m-btn{height:52px;min-height:52px}
+/* 読み取った寸法（チップ）を大きく、色付きで */
+.measure-panel .chip{padding:2px 11px;font-size:17px;color:var(--green);border-color:var(--green-2);background:#edf6f0}
+.measure-panel .chip.empty{color:#9aa69f;border-color:var(--line);background:#fff}
+/* 数字だけの表示: 入力欄の文字は透明にして、その上に読み取った数字を重ねる（入力欄の値やフォーカスには触らない） */
+.quick-wrap{position:relative;flex:1 1 0;min-width:0;display:flex}
+.quick-wrap #quickInput{flex:1 1 0;width:100%}
+.quick-numbers{display:none;position:absolute;inset:0 14px;align-items:center;gap:12px;overflow:hidden;white-space:nowrap;pointer-events:none;font-size:21px;font-weight:900;color:var(--green)}
+.quick-numbers .qn-wait{color:#9aa69f}
+.measure-overlay.numbers-only .quick-numbers{display:flex}
+.measure-overlay.numbers-only #quickInput{color:transparent;-webkit-text-fill-color:transparent;caret-color:transparent}
+.measure-overlay.numbers-only #quickInput::placeholder{color:#9aa69f;-webkit-text-fill-color:#9aa69f}
+body.outdoor .quick-numbers{font-size:26px}
