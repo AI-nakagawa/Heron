@@ -4,7 +4,7 @@ const THIN_ANGLE_DEG = 20; // これより小さい角を持つ三角形は警�
 const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true, measureKeyboard: "voice", projectCollapsed: false, signalAdd: true };
 const $ = id => document.getElementById(id);
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, deferredInstall: null, viewBox: "0 0 700 430", wakeLock: null, wakeLockPending: false, signal: { needs: [], added: 0, barrier: null }, lastQuick: "", voiceLog: [], selected: new Set() };
+const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, autoError: "", deferredInstall: null, viewBox: "0 0 700 430", savedSnapshot: "", recordBase: null, draftFailed: false, wakeLock: null, wakeLockPending: false, signal: { needs: [], added: 0, barrier: null }, lastQuick: "", voiceLog: [], selected: new Set() };
 const FIELD_LABELS = { sideA: "a", sideB: "b", sideC: "c", topBase: "上底", bottomBase: "下底", height: "高さ" };
 const DIMENSION_FIELDS = Object.keys(FIELD_LABELS);
 const mobileDevice = /Android|iPad|iPhone|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 0;
@@ -13,6 +13,7 @@ const mobileDevice = /Android|iPad|iPhone|iPod/i.test(navigator.userAgent) || na
 function today() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`; }
 function esc(v) { return String(v ?? "").replace(/[&<>'"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c])); }
 function num(id) { return parseLength($(id).value); }
+function designNum() { return parseArea($("designArea").value); } // 設計面積は「100m2」「100㎡」も 100 と読む
 function fmtLen(v) { return String(Number(Number(v).toFixed(3))); }
 // 面積の丸め方。保存した記録は保存時の丸め方（record.rounding）で表示・出力し、後から設定を変えても値が変わらないようにする
 const LEGACY_ROUNDING = { digits: 3, method: "round", sumMode: "total" }; // 丸め方を持たない旧記録（v10 まで）の表示方法
@@ -32,15 +33,16 @@ function roundingText(ro = state.settings) {
   return `小数第${ro.digits}位・${{ round: "四捨五入", floor: "切り捨て", ceil: "切り上げ" }[ro.method]}・${ro.sumMode === "each" ? "図形ごとに丸めて合計" : "合計してから丸め"}`;
 }
 function roundingNote(ro = state.settings) { return `面積の丸め：${roundingText(ro)}`; }
+// 差は表示の桁数で丸める。比率は丸める前の差から出す（小さい面積で、丸めた差が 0 になっても比率は残るように）
 function designDiff(total, design, digits = state.settings.digits) {
   if (!(design > 0)) return null;
-  const diff = Number((total - design).toFixed(digits));
-  return { diff, ratio: diff / design * 100 };
+  const raw = total - design;
+  return { diff: Number(raw.toFixed(digits)) || 0, ratio: raw / design * 100 };
 }
 function diffText(total, design, digits = state.settings.digits) {
   const d = designDiff(total, design, digits); if (!d) return "";
-  const sign = d.diff > 0 ? "+" : d.diff < 0 ? "−" : "±";
-  return `${sign}${fmt(Math.abs(d.diff), digits)} m²（${sign}${Math.abs(d.ratio).toFixed(2)}%）`;
+  const sign = v => v > 0 ? "+" : v < 0 ? "−" : "±", ratio = Number(d.ratio.toFixed(2)) || 0;
+  return `${sign(d.diff)}${fmt(Math.abs(d.diff), digits)} m²（${sign(ratio)}${Math.abs(ratio).toFixed(2)}%）`;
 }
 
 // ---------- 幾何 ----------
@@ -178,10 +180,18 @@ function sanitizeShape(s) {
   const n = s.type === "triangle" ? 3 : 4, keys = s.type === "triangle" ? ["a", "b", "c"] : ["top", "bottom", "height"];
   if (!Array.isArray(s.points) || s.points.length !== n || !s.points.every(p => p && isNum(p.x) && isNum(p.y))) return null;
   const d = s.dimensions || {};
-  if (!keys.every(k => isNum(d[k]) && d[k] > 0) || !isNum(s.area) || s.area < 0) return null;
+  if (!keys.every(k => isNum(d[k]) && d[k] > 0)) return null;
   const alignment = s.type === "trapezoid" ? s.alignment : null;
   if (s.type === "trapezoid" && !["left", "center", "right"].includes(alignment)) return null;
-  const out = { id: s.id, type: s.type, points: s.points.map(p => ({ x: p.x, y: p.y })), area: s.area, dimensions: Object.fromEntries(keys.map(k => [k, d[k]])), alignment };
+  // 面積は保存された値を使わず、寸法から計算し直す（書き換えたデータで面積だけ違う値にならないように）
+  let area;
+  if (s.type === "triangle") {
+    const { a, b, c } = d;
+    if (a + b <= c || a + c <= b || b + c <= a) return null;
+    const h = (a + b + c) / 2; area = Math.sqrt(h * (h - a) * (h - b) * (h - c));
+  } else area = (d.top + d.bottom) * d.height / 2;
+  if (!Number.isFinite(area) || area <= 0) return null; // 桁あふれ（1e200 など）や面積 0 の図形は弾く
+  const out = { id: s.id, type: s.type, points: s.points.map(p => ({ x: p.x, y: p.y })), area, dimensions: Object.fromEntries(keys.map(k => [k, d[k]])), alignment };
   if ("parent" in s) { // 無い場合（v10 まで）は withConnections で点の位置から復元する
     const p = s.parent;
     if (p !== null && !(p && isId(p.shapeId) && Number.isInteger(p.index) && p.index >= 0 && p.index < 4)) return null;
@@ -194,6 +204,13 @@ function sanitizeRecord(r) {
   if (!Array.isArray(r.shapes) || !r.shapes.length || r.shapes.length > 1000) return null;
   const shapes = r.shapes.map(sanitizeShape);
   if (shapes.some(s => !s)) return null;
+  // 接続の検査: 図形の ID は重複しない。接続先は自分より前の図形で、辺の番号はその図形の辺の数より小さい
+  const seen = new Map();
+  for (const s of shapes) {
+    if (seen.has(s.id)) return null;
+    if (s.parent) { const p = seen.get(s.parent.shapeId); if (!p || s.parent.index >= p.points.length) return null; }
+    seen.set(s.id, s);
+  }
   const rounding = sanitizeRounding(r.rounding), str = (v, max) => typeof v === "string" ? v.slice(0, max) : "";
   return {
     id: r.id, name: r.name.slice(0, 200), date: typeof r.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(r.date) ? r.date : "",
@@ -210,14 +227,62 @@ function loadRecords() {
     const v = JSON.parse(raw || "[]");
     if (!Array.isArray(v)) throw Error("not array");
     const records = v.map(sanitizeRecord).filter(Boolean);
-    if (records.length < v.length) localStorage.setItem(BACKUP_KEY, raw);
+    // 退避の書き込みに失敗しても（容量不足など）、読み込めた記録は使う
+    if (records.length < v.length) {
+      loadRecords.rejected = v.length - records.length;
+      try { localStorage.setItem(BACKUP_KEY, raw); } catch { loadRecords.backupFailed = true; }
+    }
     return records;
-  } catch {
-    try { if (raw) localStorage.setItem(BACKUP_KEY, raw); } catch { }
+  } catch { // 保存データ全体が読めない（途中で切れた JSON など）、または端末の保存領域そのものが使えない（getItem が例外）
+    if (raw) {
+      loadRecords.rejected = "all";
+      try { localStorage.setItem(BACKUP_KEY, raw); } catch { loadRecords.backupFailed = true; }
+    } else loadRecords.rejected = "storage";
     return [];
   }
 }
-function persist() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state.records)); }
+// 書き込めたときだけ state.records を差し替える。失敗したら（容量不足など）画面で知らせ、false を返す
+function persist(records) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(records)); }
+  catch { showToast("端末に保存できませんでした（空き容量の不足など）。この図面は「PDF出力」で残してください"); return false; } // JSON 保存は保存済みの記録だけなので案内しない
+  state.records = records; return true;
+}
+// 作図中の図面（図形・名称・日付・設計面積・メモ）を、保存・読み込みした時点と比べて、未保存の変更があるかを見る
+function drawingSnapshot() { return JSON.stringify({ shapes: state.shapes, name: $("name").value.trim(), date: $("date").value, design: $("designArea").value.trim(), memo: $("memo").value.trim() }); }
+function markSaved() { state.savedSnapshot = drawingSnapshot(); }
+function isDirty() { return !!state.editingId || drawingSnapshot() !== state.savedSnapshot; } // 図形の修正中（未確定）も変更ありとして扱う
+// 下書き: 未保存の変更がある間は、作図中の図面を端末に残す。スマホがアプリを閉じても（カメラに切り替えた間など）、次に開いたときに戻せるように
+const DRAFT_KEY = "field-area-draft-v1";
+function saveDraft() {
+  try {
+    if (!isDirty()) { localStorage.removeItem(DRAFT_KEY); return; }
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ version: 1, savedAt: new Date().toISOString(), recordId: state.recordId, recordBase: state.recordBase, savedSnapshot: state.savedSnapshot, shapes: state.shapes, name: $("name").value, date: $("date").value, designArea: $("designArea").value, memo: $("memo").value }));
+    state.draftFailed = false;
+  } catch { // 下書きを残せないとき（空き容量の不足など）は、アプリが閉じられると作業が消えるので、一度知らせる
+    if (!state.draftFailed) showToast("作業中の図面を端末に残せませんでした（空き容量の不足など）。こまめに「図面を保存」してください");
+    state.draftFailed = true;
+  }
+}
+// 起動時に下書きがあれば戻す。戻したら true
+function restoreDraft() {
+  let d;
+  try { d = JSON.parse(localStorage.getItem(DRAFT_KEY) || "null"); } catch { return false; }
+  if (!d || typeof d !== "object" || !Array.isArray(d.shapes)) return false;
+  const str = (v, max) => typeof v === "string" ? v.slice(0, max) : "";
+  let shapes = [];
+  if (d.shapes.length) { // 図形は保存データと同じ検査を通す（壊れた下書きは使わない）
+    const checked = sanitizeRecord({ id: "draft", name: "下書き", shapes: d.shapes });
+    if (!checked) return false;
+    shapes = checked.shapes;
+  }
+  const recordId = isId(d.recordId) && state.records.some(r => r.id === d.recordId) ? d.recordId : null;
+  state.shapes = withConnections(shapes); state.recordId = recordId; state.selectedEdge = null; state.editingId = null;
+  $("name").value = str(d.name, 60); $("date").value = /^\d{4}-\d{2}-\d{2}$/.test(d.date) ? d.date : today(); $("designArea").value = str(d.designArea, 40); $("memo").value = str(d.memo, 500);
+  state.savedSnapshot = typeof d.savedSnapshot === "string" ? d.savedSnapshot : "";
+  state.recordBase = recordId && typeof d.recordBase === "string" ? d.recordBase : null;
+  $("saveDrawingButton").textContent = recordId ? "変更を保存" : "図面を保存";
+  return isDirty();
+}
 function loadSettings() {
   try {
     const s = { ...DEFAULT_SETTINGS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || "{}") };
@@ -251,7 +316,7 @@ function svgMarkup(shapes, { viewBox, selectedEdge = null, ghost = null, interac
       if (labeled.some(o => sameEdge(e.a, e.b, o.a, o.b))) return;
       labeled.push(e);
       const m = midpoint(e.a, e.b);
-      html += `<text class="edge-length" style="font-size:${edgeSize}px;stroke-width:${halo}px" x="${m.x}" y="${m.y - labelOffset}">${dist(e.a, e.b).toFixed(2)}m</text>`;
+      html += `<text class="edge-length" style="font-size:${edgeSize}px;stroke-width:${halo}px" x="${m.x}" y="${m.y - labelOffset}">${fmtLen(dist(e.a, e.b))}m</text>`;
     });
   });
   if (interactive) freeEdges(shapes).forEach(e => {
@@ -333,7 +398,7 @@ function signalGroups(text, limit = Infinity) {
     const need = state.signal.needs[groups.length] ?? quickTargets().length;
     const values = parseLengths(text.slice(rest, sig.index));
     if (values.length < need) continue; // 1つ目の数字の後の合図などは、次の数字を待つ
-    groups.push(values.slice(0, need)); rest = sig.end;
+    groups.push(values); rest = sig.end; // 数が多いときもそのまま渡し、processSignals で追加を止める
   }
   return { groups, rest };
 }
@@ -344,11 +409,21 @@ function activeQuickText() {
 }
 // 新しくそろったまとまりがあれば図形を追加する。追加したら true
 function processSignals() {
-  if (!state.settings.signalAdd) return false;
+  // 重なりの確認を出している間は、次のまとまりを処理しない（確認中の図形が別の寸法に置き換わらないように）
+  if (!state.settings.signalAdd || $("confirmDialog").open) return false;
   const k = state.signal.added, { groups } = signalGroups($("quickInput").value, k + 1);
   if (groups.length <= k) return false;
   const targets = quickTargets(), values = groups[k];
   state.signal.needs[k] = targets.length; state.signal.added = k + 1;
+  if (values.length > targets.length) {
+    // 合図までに数が多い（騒音で余分な数が入ったなど）ときは、どれが寸法か決められないので追加しない
+    const msg = `数が${values.length}個あります（${values.map(fmtLen).join(" ")}）。`;
+    state.autoError = msg; $("message").textContent = msg;
+    logVoice(`数が多いので追加せず: ${values.map(fmtLen).join(" ")}`);
+    showToast(`追加できません：${msg} 読み直してください`);
+    DIMENSION_FIELDS.forEach(id => { if (!$(id).readOnly) $(id).value = ""; });
+    return processSignals();
+  }
   targets.forEach((id, i) => { $(id).value = fmtLen(values[i]); });
   logVoice(`合図で追加: ${values.map(fmtLen).join(" ")}`);
   if (addShape({ auto: true })) return true;
@@ -372,7 +447,10 @@ function logVoice(text) {
 }
 function applyQuickInput() {
   const text = $("quickInput").value, targets = quickTargets();
-  if (!text.trim()) { resetSignalSession(); state.lastQuick = text; $("quickParsed").innerHTML = ""; updatePreview(); return; }
+  if (!text.trim()) { // 入力欄を空にしたら寸法も消す（前の寸法のまま「追加」されないように）
+    resetSignalSession(); state.lastQuick = text; $("quickParsed").innerHTML = ""; state.autoError = "";
+    targets.forEach(id => { $(id).value = ""; }); updatePreview(); return;
+  }
   if (processSignals()) { state.lastQuick = $("quickInput").value; return; }
   state.lastQuick = text;
   const values = parseLengths(activeQuickText());
@@ -402,8 +480,16 @@ function buildCandidate() {
     const m = minAngle(shape);
     if (m < THIN_ANGLE_DEG) warnings.push({ text: `最小角が ${m.toFixed(1)}° の細長い三角形です。テープの数cmの誤差が面積に大きく響くため、分け方の見直しや再計測を検討してください。`, short: `細長い三角形（最小角 ${m.toFixed(1)}°）` });
   }
-  const hits = overlappingNumbers(shape, state.shapes.filter(s => s.id !== editing?.id));
-  if (hits.length) warnings.push({ text: `図形 ${hits.join("・")} と重なっています。「接続方向を反転する」や a・b の入れ替えを確認してください。`, short: `図形 ${hits.join("・")} と重なり（反転・a⇄b を確認）` });
+  let hits;
+  if (rebuilt) {
+    // 修正のときは、作り直した後の位置で調べる。修正した図形だけでなく、つられて動いた後ろの図形どうしの重なりも見る
+    const moved = rebuilt.filter(s => { const old = state.shapes.find(o => o.id === s.id); return s.id === shape.id || !old || s.points.some((p, k) => !samePoint(p, old.points[k])); });
+    const set = new Set();
+    moved.forEach(m => { const ns = overlappingNumbers(m, rebuilt.filter(o => o.id !== m.id)); if (ns.length) { set.add(state.shapes.findIndex(s => s.id === m.id) + 1); ns.forEach(n => set.add(n)); } });
+    hits = [...set].sort((a, b) => a - b);
+  } else hits = overlappingNumbers(shape, state.shapes);
+  const overlapText = editing ? `図形 ${hits.join("・")} が重なります` : `図形 ${hits.join("・")} と重なっています`;
+  if (hits.length) warnings.push({ text: `${overlapText}。「接続方向を反転する」や a・b の入れ替えを確認してください。`, short: `${overlapText}（反転・a⇄b を確認）` });
   return { shape, warnings, overlap: hits.length > 0, rebuilt };
 }
 function updatePreview() {
@@ -412,8 +498,9 @@ function updatePreview() {
   if (!filled) {
     box.className = "preview-box idle";
     box.textContent = "寸法を入れると、ここに面積が、図面に点線で追加位置が表示されます。";
-    status.className = "measure-status idle";
-    status.textContent = state.settings.signalAdd ? "寸法を話し、数がそろったら「はい」「OK」で追加します" : "寸法を話すか入力すると、図面に点線で表示されます（「はい」「OK」などの合図は無視します）";
+    status.className = `measure-status ${state.autoError ? "error" : "idle"}`;
+    // 合図で追加できなかったときは、次の寸法がそろうまで理由を出したままにする
+    status.textContent = state.autoError ? `追加できませんでした：${state.autoError} 読み直してください` : state.settings.signalAdd ? "寸法を話し、数がそろったら「はい」「OK」で追加します" : "寸法を話すか入力すると、図面に点線で表示されます（「はい」「OK」などの合図は無視します）";
   } else {
     try {
       const cand = buildCandidate(); state.candidate = cand;
@@ -435,7 +522,7 @@ function updatePreview() {
 }
 function clearInputs() {
   DIMENSION_FIELDS.forEach(id => $(id).value = "");
-  $("quickInput").value = ""; $("quickParsed").innerHTML = ""; resetSignalSession(); state.lastQuick = "";
+  $("quickInput").value = ""; $("quickParsed").innerHTML = ""; resetSignalSession(); state.lastQuick = ""; state.autoError = "";
   $("flipDirection").checked = false;
   document.querySelector('input[name="alignment"][value="center"]').checked = true;
   $("message").textContent = "";
@@ -469,9 +556,10 @@ function undoLast() {
 function addShape({ auto = false } = {}) {
   let cand;
   try { cand = buildCandidate(); }
-  catch (e) { $("message").textContent = e.message; if (auto) showToast(`追加できません：${e.message} 読み直してください`); return false; }
+  catch (e) { $("message").textContent = e.message; if (auto) { state.autoError = e.message; showToast(`追加できません：${e.message} 読み直してください`); } return false; }
   const editing = editingShape();
   const clearAfterAdd = () => {
+    state.autoError = "";
     if (!auto) { clearInputs(); return; }
     DIMENSION_FIELDS.forEach(id => $(id).value = "");
     $("flipDirection").checked = false;
@@ -483,12 +571,12 @@ function addShape({ auto = false } = {}) {
     if (editing) {
       const n = state.shapes.findIndex(s => s.id === editing.id) + 1;
       state.shapes = cand.rebuilt; state.editingId = null;
-      clearAfterAdd(); refresh(); showToast(`図形 ${n} を修正しました`);
+      clearAfterAdd(); showToast(`図形 ${n} を修正しました`); refresh(); // refresh 中に続きの合図が失敗したら、そのお知らせを後に出す
     } else {
       state.shapes.push(cand.shape);
       const next = freeEdges().find(e => e.shapeId === cand.shape.id);
       if (next) state.selectedEdge = edgeKey(next);
-      clearAfterAdd(); refresh(); showToast(`図形 ${state.shapes.length} を追加しました`);
+      clearAfterAdd(); showToast(`図形 ${state.shapes.length} を追加しました`); refresh();
     }
     if (auto) navigator.vibrate?.(40);
     if (measureOpen()) focusQuick(); else if (!auto) $("quickInput").blur();
@@ -527,9 +615,10 @@ function refresh() {
   $("canvasHint").textContent = editing ? "点線が修正後の位置です" : has ? "緑色の外周辺をタップして次の接続先を選択" : "最初の図形を追加してください";
   refreshEdgeOptions(); applySharedLength(); updateQuickHint(); renderSummary(); renderParts();
   if ($("quickInput").value.trim()) applyQuickInput(); else updatePreview();
+  saveDraft();
 }
 function renderSummary() {
-  const total = computeTotal(state.shapes), design = num("designArea");
+  const total = computeTotal(state.shapes), design = designNum();
   $("drawingTotal").textContent = fmt(total);
   const d = designDiff(total, design);
   $("designSummary").classList.toggle("hidden", !d);
@@ -595,14 +684,14 @@ function dimensionText(s) { const d = s.dimensions; return s.type === "triangle"
 
 // ---------- 記録 ----------
 function resetDrawing() {
-  state.shapes = []; state.selectedEdge = null; state.recordId = null; state.editingId = null;
+  state.shapes = []; state.selectedEdge = null; state.recordId = null; state.recordBase = null; state.editingId = null;
   $("name").value = ""; $("date").value = today(); $("designArea").value = ""; $("memo").value = "";
   $("saveDrawingButton").textContent = "図面を保存";
-  setProjectCollapsed(false); setMode("triangle"); refresh();
+  setProjectCollapsed(false); setMode("triangle"); markSaved(); refresh();
 }
 // 名称・日付・設計面積は一度入れたら見返さないので、1行の要約に畳んで図面を広く使えるようにする
 function renderProjectSummary() {
-  const name = $("name").value.trim(), date = $("date").value, design = num("designArea");
+  const name = $("name").value.trim(), date = $("date").value, design = designNum();
   const detail = [date ? date.replaceAll("-", "/") : "", design > 0 ? `設計 ${fmt(design)} m²` : ""].filter(Boolean).join("・");
   $("projectSummaryText").innerHTML = `${name ? `<b>${esc(name)}</b>` : '<em>名称未入力</em>'}${detail ? `<small>${esc(detail)}</small>` : ""}`;
 }
@@ -617,25 +706,31 @@ function ask(title, text, action, acceptLabel = "実行") {
   $("confirmTitle").textContent = title; $("confirmText").textContent = text; $("acceptConfirmButton").textContent = acceptLabel;
   $("confirmDialog").showModal();
 }
-function saveDrawing() {
+// recordBase: 開いた（保存した）時点の記録の更新日時。保存するとき、記録がその後に別の内容で変わっていたら（JSON の復元など）確認する
+function saveDrawing(force = false) {
   const name = $("name").value.trim();
   if (!name) { showToast("名称・測点名を入力してください"); setProjectCollapsed(false); $("name").focus(); return; }
   if (!state.shapes.length) { showToast("図形を1つ以上追加してください"); return; }
   if (state.editingId) { showToast("図形の修正を確定するか、やめてから保存してください"); return; }
-  const now = new Date().toISOString(), design = num("designArea");
+  const now = new Date().toISOString(), design = designNum();
   const record = { id: state.recordId || uid(), name, date: $("date").value || today(), designArea: design > 0 ? design : null, memo: $("memo").value.trim(), shapes: structuredClone(state.shapes), total: computeTotal(state.shapes), rounding: currentRounding(), createdAt: now, updatedAt: now };
-  const i = state.records.findIndex(r => r.id === record.id);
-  if (i >= 0) { record.createdAt = state.records[i].createdAt; state.records[i] = record; } else state.records.unshift(record);
-  state.recordId = record.id; persist(); renderHistory();
+  const i = state.records.findIndex(r => r.id === record.id), next = [...state.records];
+  if (i >= 0 && !force && state.recordBase !== null && next[i].updatedAt !== state.recordBase) { // 更新日時が空の記録も比べる
+    ask("保存履歴の図面が変わっています", "開いた後で、保存履歴のこの図面が別の内容に置き換わりました（JSON からの復元など）。今の画面の内容で上書きしますか？", () => saveDrawing(true), "上書きする");
+    return;
+  }
+  if (i >= 0) { record.createdAt = next[i].createdAt; next[i] = record; } else next.unshift(record);
+  if (!persist(next)) return;
+  state.recordId = record.id; state.recordBase = record.updatedAt; markSaved(); saveDraft(); renderHistory();
   $("saveDrawingButton").textContent = "変更を保存";
   showToast(i >= 0 ? "図面を更新しました" : "図面を保存しました");
 }
 function editRecord(id) {
   const r = state.records.find(x => x.id === id); if (!r) return;
-  state.recordId = r.id; state.editingId = null; state.shapes = withConnections(structuredClone(r.shapes));
+  state.recordId = r.id; state.recordBase = r.updatedAt; state.editingId = null; state.shapes = withConnections(structuredClone(r.shapes));
   $("name").value = r.name; $("date").value = r.date; $("designArea").value = r.designArea ? fmtLen(r.designArea) : ""; $("memo").value = r.memo || "";
   $("saveDrawingButton").textContent = "変更を保存";
-  state.selectedEdge = null; clearInputs(); refresh(); renderProjectSummary(); switchView("drawing");
+  state.selectedEdge = null; clearInputs(); markSaved(); refresh(); renderProjectSummary(); switchView("drawing");
 }
 // 保存した記録の合計（保存時の丸め方で計算）
 function recordTotal(r) { return computeTotal(r.shapes, recordRounding(r)); }
@@ -668,7 +763,7 @@ function switchView(view) {
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 function printRecord(record = null) {
-  const design = num("designArea");
+  const design = designNum();
   const r = record || { name: $("name").value.trim() || "未保存の図面", date: $("date").value || today(), designArea: design > 0 ? design : null, memo: $("memo").value.trim(), shapes: state.shapes };
   if (!r.shapes.length) return;
   const ro = record ? recordRounding(record) : currentRounding(); // 保存した記録は保存時の丸め方で出す
@@ -679,12 +774,14 @@ function printRecord(record = null) {
 }
 function download(name, content, type) { const blob = new Blob([content], { type }), url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 500); }
 function csvCell(v) { return `"${String(v ?? "").replace(/"/g, '""')}"`; }
+// 名称・メモが = + - @ などで始まると、表計算ソフトが数式として扱うので、先頭に ' を付けて文字として出す
+function csvText(v) { const s = String(v ?? ""); return csvCell(/^[=+\-@\t\r]/.test(s) ? `'${s}` : s); }
 function exportCsv() {
   if (!state.records.length) return showToast("出力する記録がありません");
   const head = ["名称・測点名", "日付", "図形数", "合計面積(m²)", "設計面積(m²)", "差(m²)", "比率(%)", "面積の丸め", "メモ"];
   const rows = state.records.map(r => {
     const ro = recordRounding(r), total = recordTotal(r), d = designDiff(total, r.designArea, ro.digits);
-    return [r.name, r.date, r.shapes.length, total.toFixed(ro.digits), r.designArea ?? "", d ? d.diff.toFixed(ro.digits) : "", d ? d.ratio.toFixed(2) : "", roundingText(ro), r.memo].map(csvCell).join(",");
+    return [csvText(r.name), ...[r.date, r.shapes.length, total.toFixed(ro.digits), r.designArea ?? "", d ? d.diff.toFixed(ro.digits) : "", d ? d.ratio.toFixed(2) : "", roundingText(ro)].map(csvCell), csvText(r.memo)].join(",");
   });
   download(`現場面積_${today()}.csv`, "﻿" + [head.map(csvCell).join(","), ...rows].join("\r\n"), "text/csv;charset=utf-8");
 }
@@ -695,10 +792,13 @@ async function importJson(file) {
     if (!data || !Array.isArray(data.records)) throw Error();
     const valid = data.records.map(sanitizeRecord).filter(Boolean), skipped = data.records.length - valid.length;
     if (!valid.length) throw Error();
+    // 同じ図面が端末にもあるときは、更新日時の新しい方を残す（古いバックアップで、後から直した図面が巻き戻らないように）
     const map = new Map(state.records.map(r => [r.id, r]));
-    valid.forEach(r => map.set(r.id, r));
-    state.records = [...map.values()].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)));
-    persist(); renderHistory(); showToast(`${valid.length}件を復元しました${skipped ? `（${skipped}件は形式が正しくないため読み込みませんでした）` : ""}`);
+    let kept = 0;
+    valid.forEach(r => { const cur = map.get(r.id); if (cur && String(cur.updatedAt) >= String(r.updatedAt)) { kept++; return; } map.set(r.id, r); });
+    if (!persist([...map.values()].sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt))))) return;
+    const notes = [kept ? `${kept}件は端末の方が新しいか同じため、端末の内容を残しました` : "", skipped ? `${skipped}件は形式が正しくないため読み込みませんでした` : ""].filter(Boolean);
+    renderHistory(); showToast(`${valid.length - kept}件を復元しました${notes.length ? `（${notes.join("。")}）` : ""}`);
   } catch { showToast("このバックアップは読み込めません"); }
   finally { $("importJsonInput").value = ""; }
 }
@@ -752,7 +852,7 @@ $("quickInput").addEventListener("input", e => {
 });
 // 入力欄から離れたら（音声入力が終わったら）、合図で使い終わった文字を消して残りだけにする
 $("quickInput").addEventListener("blur", () => {
-  if (!state.signal.added) return;
+  if (!state.signal.added || $("confirmDialog").open) return; // 重なりの確認でフォーカスが移ったときは整理しない（確認の後で続きを処理する）
   const rest = activeQuickText().replace(/^[\s、。,.!！?？]+/, "");
   resetSignalSession(); $("quickInput").value = rest; logVoice(`入力欄から離れたので整理: "${rest}"`); applyQuickInput();
 });
@@ -762,14 +862,19 @@ $("quickInput").addEventListener("keydown", e => {
   if (parseLengths(activeQuickText()).length >= quickTargets().length) addShape();
 });
 DIMENSION_FIELDS.forEach(id => {
-  $(id).addEventListener("input", () => { $("message").textContent = ""; updatePreview(); });
+  $(id).addEventListener("input", () => {
+    // 寸法を手で直したら、全画面入力に残っている文字は使わない（設定の変更などで古い数字に戻らないように）
+    if ($("quickInput").value) { $("quickInput").value = ""; $("quickParsed").innerHTML = ""; resetSignalSession(); state.lastQuick = ""; state.autoError = ""; }
+    $("message").textContent = ""; updatePreview();
+  });
   $(id).addEventListener("change", () => { const v = parseLength($(id).value); if (Number.isFinite(v)) $(id).value = fmtLen(v); updatePreview(); });
 });
-$("designArea").addEventListener("input", () => { renderSummary(); renderProjectSummary(); });
-["name", "date"].forEach(id => $(id).addEventListener("input", renderProjectSummary));
+$("designArea").addEventListener("input", () => { renderSummary(); renderProjectSummary(); saveDraft(); });
+["name", "date"].forEach(id => $(id).addEventListener("input", () => { renderProjectSummary(); saveDraft(); }));
+$("memo").addEventListener("input", saveDraft);
 $("projectCollapse").addEventListener("click", () => setProjectCollapsed(true));
 $("projectExpand").addEventListener("click", () => setProjectCollapsed(false));
-$("designArea").addEventListener("change", () => { const v = parseLength($("designArea").value); if (Number.isFinite(v)) $("designArea").value = fmtLen(v); renderSummary(); });
+$("designArea").addEventListener("change", () => { const v = designNum(); if (Number.isFinite(v)) $("designArea").value = fmtLen(v); renderSummary(); saveDraft(); });
 document.querySelectorAll('input[name="alignment"]').forEach(r => r.addEventListener("change", updatePreview));
 $("flipDirection").addEventListener("change", updatePreview);
 $("swapButton").addEventListener("click", swapAB);
@@ -805,14 +910,21 @@ if (history.state?.measure) history.replaceState(null, ""); // 再読み込み�
 window.addEventListener("popstate", () => closeMeasure(true));
 if (window.visualViewport) { visualViewport.addEventListener("resize", layoutMeasure); visualViewport.addEventListener("scroll", layoutMeasure); }
 window.addEventListener("resize", layoutMeasure);
-$("newButton").addEventListener("click", () => state.shapes.length ? ask("新しい図面を作りますか？", "未保存の変更は失われます。", resetDrawing) : resetDrawing());
-$("saveDrawingButton").addEventListener("click", saveDrawing);
+$("newButton").addEventListener("click", () => isDirty() ? ask("新しい図面を作りますか？", "保存していない変更は失われます。", resetDrawing) : resetDrawing());
+$("saveDrawingButton").addEventListener("click", () => saveDrawing());
 $("printButton").addEventListener("click", () => printRecord());
 $("historyList").addEventListener("click", e => {
   const edit = e.target.closest("[data-edit]"), del = e.target.closest("[data-delete]"), pdf = e.target.closest("[data-pdf]");
-  if (edit) editRecord(edit.dataset.edit);
+  // 作図中の図面に保存していない変更があるときは、別の図面で置き換える前に確認する
+  if (edit) { const id = edit.dataset.edit; if (isDirty()) ask("作業中の図面を閉じますか？", "連続図面に、保存していない変更があります。この図面を開くと、その変更は失われます。", () => editRecord(id), "閉じて開く"); else editRecord(id); }
   if (pdf) { const r = state.records.find(x => x.id === pdf.dataset.pdf); if (r) printRecord(r); }
-  if (del) ask("図面を削除しますか？", "削除した図面は元に戻せません。", () => { state.records = state.records.filter(r => r.id !== del.dataset.delete); persist(); renderHistory(); showToast("図面を削除しました"); });
+  if (del) ask("図面を削除しますか？", "削除した図面は元に戻せません。", () => {
+    const id = del.dataset.delete;
+    if (!persist(state.records.filter(r => r.id !== id))) return;
+    // 連続図面で開いている図面を消したときは、画面の内容を「まだ保存していない新しい図面」として扱う（保存済みのつもりで消えないように）
+    if (state.recordId === id) { state.recordId = null; state.recordBase = null; state.savedSnapshot = ""; $("saveDrawingButton").textContent = "図面を保存"; saveDraft(); }
+    renderHistory(); showToast("図面を削除しました");
+  });
 });
 $("historyList").addEventListener("change", e => {
   const box = e.target.closest("[data-select]"); if (!box) return;
@@ -846,4 +958,14 @@ window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); state.
 $("installButton").addEventListener("click", async () => { if (!state.deferredInstall) return; state.deferredInstall.prompt(); await state.deferredInstall.userChoice; state.deferredInstall = null; $("installButton").classList.add("hidden"); });
 if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js"));
 $("date").value = today();
+const draftRestored = restoreDraft(); // refresh より前に戻す（refresh が空の図面で下書きを消さないように）
+if (!draftRestored) markSaved();
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") saveDraft(); });
+window.addEventListener("pagehide", saveDraft);
 applySettings(); setMeasureKeyboard(state.settings.measureKeyboard); setProjectCollapsed(state.settings.projectCollapsed); updateQuickHint(); refresh(); renderHistory(); updateWakeLock();
+function showLoadProblem() {
+  if (loadRecords.rejected === "storage") showToast("端末の保存領域を使えません（プライベートブラウズなど）。図面は「PDF出力」で残してください");
+  else if (loadRecords.rejected) showToast(`${loadRecords.rejected === "all" ? "保存データを読み込めませんでした" : `読み込めない記録が${loadRecords.rejected}件ありました`}${loadRecords.backupFailed ? "（空き容量が足りず、元のデータを残せませんでした）" : "（元のデータは別に残しています）"}`);
+}
+if (draftRestored) showToast("保存していない作業中の図面を戻しました（不要なら「新規」を押してください）");
+if (loadRecords.rejected) setTimeout(showLoadProblem, draftRestored ? 2400 : 0); // 下書きのお知らせと重ならないように後から出す

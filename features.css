@@ -80,7 +80,7 @@ body.keyboard-open .measure-panel{padding-bottom:6px}
 .measure-input-row #quickInput{flex:1 1 0;min-width:0;width:auto;height:50px;padding:0 12px}
 .measure-panel .m-btn{min-height:50px;padding:0 10px;border:0;background:#e3ebe5;color:var(--green)}
 .m-add{flex:none;min-width:78px;height:50px;border:0;border-radius:12px;background:var(--green);color:#fff;font-weight:900;font-size:17px;box-shadow:0 5px 14px rgba(23,76,60,.25)}
-body.measuring .toast{top:calc(var(--vv-top,0px) + 62px);bottom:auto}
+body.measuring .toast{top:calc(var(--vv-top,0px) + 62px);bottom:auto;z-index:60}
 body.outdoor .measure-input-row #quickInput{height:58px;font-size:24px}
 body.outdoor .m-add,body.outdoor .measure-panel .m-btn{min-height:58px;height:58px}
 body.outdoor .measure-status{font-size:15px}

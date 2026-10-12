@@ -23,21 +23,35 @@ const OTHER_KANJI = /[\p{Script=Han}々]/u;
 const NUMERAL_KANJI = /[〇零一二三四五六七八九十百千点]/;
 function isWordPart(ch) { return !!ch && OTHER_KANJI.test(ch) && !NUMERAL_KANJI.test(ch); }
 
+// 面積の単位（㎡・m²・平米・平方メートル）は数値の一部ではないので、NFKC で ㎡→m2 になる前に除く（「100㎡」を 100.02 と読まないように）
+const AREA_UNIT_RE = /\s*(?:㎡|[mｍ]\s*²|平方メートル|平米)/g;
+
 function normalizeSpokenNumbers(text) {
-  let s = String(text ?? "").normalize("NFKC").replace(/てん|ポイント/g, "点").replace(/ゼロ/g, "〇");
+  let s = String(text ?? "").replace(AREA_UNIT_RE, " ").normalize("NFKC").replace(/てん|ポイント/g, "点").replace(/ゼロ/g, "〇");
   // 「三点〇一」: 点の前は位取り、点の後は1桁ずつ読む
   s = s.replace(/([〇零一二三四五六七八九十百千0-9]+)\s*点\s*([〇零一二三四五六七八九0-9]+)/g, (_, a, b) => `${kanjiInteger(a)}.${digitwise(b)}`);
   s = s.replace(/[〇零一二三四五六七八九十百千]+/g, (k, at, all) => isWordPart(all[at - 1]) || isWordPart(all[at + k.length]) ? " " : kanjiInteger(k));
   // 「1回」「1つ目」「2度」のような回数・順番は寸法ではないので除く
   s = s.replace(/(?<![\d.])\d+(?:\.\d+)?\s*(?:回|度|番|個|本|枚|人|つ|目|か所|箇所|ヶ所)/g, " ");
-  // 「3メートル5センチ」「4m25」→ 3.05 / 4.25（後ろの数値はセンチとして扱う）
-  s = s.replace(/(?<![\d.])(\d+)\s*(?:メートル|m)\s*(\d{1,2})(?![\d.])(?!\s*(?:メートル|m))\s*(?:センチメートル|センチ|cm)?/gi, (_, m, cm) => String(Number(m) + Number(cm) / 100));
-  s = s.replace(/(?<![\d.])(\d+(?:\.\d+)?)\s*(?:センチメートル|センチ|cm)/gi, (_, cm) => ` ${Number(cm) / 100} `);
+  // 「3メートル5センチ」→ 3.05（センチと言ったときは、後ろの数値をセンチとして扱う）
+  s = s.replace(/(?<![\d.])(\d+)\s*(?:メートル|m)\s*(\d{1,2})\s*(?:センチメートル|センチ|cm)/gi, (_, m, cm) => `${Number(m) + Number(cm) / 100} `); // 後ろの空白は食べない（「4m25 3.01」が 4.253 にならないように）
+  // 「4m25」「1メートル05」→ 4.25 / 1.05、「1メートル5」→ 1.5（m の後ろの数字は小数点以下として読む）
+  // 1桁は m に続けて書いたときだけ（「3m 4 5」の 4 は次の寸法）。2桁は「4m 25」のような空白があっても読む
+  s = s.replace(/(?<![\d.])(\d+)\s*(?:メートル|m)(?:(\d)|\s*(\d{2}))(?![\d.])(?!\s*(?:メートル|m|センチメートル|センチ|cm))/gi, (_, m, d1, d2) => `${d1 !== undefined ? Number(m) + Number(d1) / 10 : Number(m) + Number(d2) / 100} `);
+  // 変換した値の前には空白を入れない（「-50cm」の負号が数値から離れて、正の数として読まれないように）。「.5cm」も 0.005 と読む
+  s = s.replace(/(?<![\d.])(\d+(?:\.\d+)?|\.\d+)\s*(?:センチメートル|センチ|cm)/gi, (_, cm) => `${Number(cm) / 100} `);
   return s;
 }
 
+// 「.5」は 0.5 と読む。先頭や空白の後の「-」「−」は負の数として返し、寸法の検査で弾く（「3-4-5」のような区切りの「-」はそのまま区切り）
+// 「- 3」のように負号と数値の間に空白があっても負の数とする（正の 3 として追加しないように）
 function parseLengths(text) {
-  return (normalizeSpokenNumbers(text).match(/\d+(?:\.\d+)?/g) || []).map(Number).filter(Number.isFinite);
+  const s = normalizeSpokenNumbers(text), values = [];
+  for (const m of s.matchAll(/(?<![\d.])(?:\d+(?:\.\d+)?|\.\d+)/g)) {
+    const negative = /(?:^|[\s、,(（])[-−]\s*$/.test(s.slice(0, m.index));
+    values.push((negative ? -1 : 1) * Number(m[0]));
+  }
+  return values.filter(Number.isFinite);
 }
 
 function parseLength(text) {
@@ -45,10 +59,18 @@ function parseLength(text) {
   return values.length ? values[0] : NaN;
 }
 
+// 設計面積の欄: 「100m2」も面積の単位として読む（寸法の「4m25」とは違い、面積の欄では m の後ろの 2 はセンチではない）
+// 「百㎡」のような漢数字でも読めるよう、㎡・m² は NFKC の前に除き、m2 は直前が数字でなくても除く
+// 「1,200」「1，200.5」の桁区切りのカンマは除く（寸法の欄と違い、面積の欄に数を並べることはないので、区切りとして読まない）
+function parseArea(text) {
+  return parseLength(String(text ?? "").replace(AREA_UNIT_RE, " ").normalize("NFKC").replace(/\s*m\s*2(?!\d)/gi, " ").replace(/(?<=\d),(?=\d{3}(?!\d))/g, ""));
+}
+
 // 計測の合図（「はい」「OK」）の位置を返す。数がそろった後の合図で図形を追加するのに使う
-const SIGNAL_RE = /(?<![A-Za-zＡ-Ｚａ-ｚ])[OoＯｏ][KkＫｋ](?![A-Za-zＡ-Ｚａ-ｚ])|オッケー?|オーケー|おっけー?|おーけー|はーい|はい|ハイ|ﾊｲ/g;
+// 「これはいい」「ハイライト」のように、後ろにかなが続く「はい」「ハイ」は言葉の一部なので合図にしない（「はいっ」は合図）
+const SIGNAL_RE = /(?<![A-Za-zＡ-Ｚａ-ｚ])[OoＯｏ][KkＫｋ](?![A-Za-zＡ-Ｚａ-ｚ])|オッケー?|オーケー|おっけー?|おーけー|(?:はーい|はい|ハイ|ﾊｲ)(?!(?![っッｯ])[ぁ-ゖァ-ヺｦ-ﾝ])/g;
 function findSignals(text) {
   return [...String(text ?? "").matchAll(SIGNAL_RE)].map(m => ({ index: m.index, end: m.index + m[0].length }));
 }
 
-if (typeof module !== "undefined") module.exports = { parseLengths, parseLength, normalizeSpokenNumbers, findSignals };
+if (typeof module !== "undefined") module.exports = { parseLengths, parseLength, parseArea, normalizeSpokenNumbers, findSignals };
