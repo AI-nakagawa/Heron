@@ -204,3 +204,14 @@ body.outdoor .close-add{min-height:54px;font-size:16px}
   #printSheet .print-close{display:inline-block;margin-top:1mm;color:#185c3e;font-weight:700}
   #printSheet .print-close.warn{color:#9a4c00}
 }
+
+/* v13.4: 図面の文字はタップの邪魔をしない、アプリの更新のお知らせ、確認待ち取り消しの案内 */
+.shape-label,.edge-length,.vertex-label,.vertex-dot{pointer-events:none}
+.update-banner{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:8px;padding:10px 12px;padding-top:calc(10px + env(safe-area-inset-top));background:#fff3d6;border-bottom:2px solid #e3a33c;color:#6b4300;font-weight:800;font-size:13px;line-height:1.45}
+.update-banner span{flex:1}
+.update-banner button{flex:none;border:0;border-radius:9px;padding:8px 12px;font-weight:900}
+#updateReload{background:var(--green);color:#fff}
+#updateClose{background:transparent;color:#6b4300;padding:8px}
+body.measuring .update-banner{display:none} /* 全画面入力中は出さない（閉じると戻る） */
+.close-line.redo{color:#8f480b}
+@media print{.update-banner{display:none!important}}

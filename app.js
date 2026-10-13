@@ -381,40 +381,44 @@ function svgMarkup(shapes, { viewBox, selectedEdge = null, ghost = null, interac
   const vb = viewBox.split(/\s+/).map(Number), scale = Math.max(vb[2], vb[3]);
   const t = scale * textScale, labelSize = t * .045, edgeSize = t * .025, labelOffset = t * .012, halo = t * .006, vertexSize = t * .03;
   const all = ghost ? [...shapes, ghost] : shapes, vertices = vertexList(all), center = centroid(all.flatMap(s => s.points));
-  let html = "";
+  // 描く順（v13.4）: ①全図形の塗り → ②選べる辺の線 → ③点線の図形 → ④文字（図形番号・辺の長さ・点線の寸法・頂点名）→ ⑤タップ用の透明な線。
+  // 図形ごとに「塗り→文字」と描くと、後から描く図形の半透明の塗りが前の図形の文字を覆って薄くなるため、文字はすべて塗りの後にまとめて描く
+  let fills = "", lines = "", ghostFill = "", texts = "", hits = "";
   const labeled = [];
   shapes.forEach((s, i) => {
     const c = centroid(s.points);
-    html += `<polygon class="shape-polygon" points="${s.points.map(p => `${p.x},${p.y}`).join(" ")}" fill="${color(i)}" fill-opacity=".78"/><text class="shape-label" style="font-size:${labelSize}px" x="${c.x}" y="${c.y}">${i + 1}</text>`;
+    fills += `<polygon class="shape-polygon" points="${s.points.map(p => `${p.x},${p.y}`).join(" ")}" fill="${color(i)}" fill-opacity=".78"/>`;
+    texts += `<text class="shape-label" style="font-size:${labelSize}px" x="${c.x}" y="${c.y}">${i + 1}</text>`;
     shapeEdges(s).forEach(e => {
       if (labeled.some(o => sameEdge(e.a, e.b, o.a, o.b))) return;
       labeled.push(e);
       const m = midpoint(e.a, e.b);
-      html += `<text class="edge-length" style="font-size:${edgeSize}px;stroke-width:${halo}px" x="${m.x}" y="${m.y - labelOffset}">${fmtLen(dist(e.a, e.b))}m</text>`;
+      texts += `<text class="edge-length" style="font-size:${edgeSize}px;stroke-width:${halo}px" x="${m.x}" y="${m.y - labelOffset}">${fmtLen(dist(e.a, e.b))}m</text>`;
     });
   });
   if (interactive) (edges || freeEdges(shapes)).forEach(e => {
     const key = edgeKey(e);
-    html += `<line class="edge-line ${selectedEdge === key ? "selected" : ""}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/><line class="edge-hit" data-edge="${esc(key)}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/>`;
+    lines += `<line class="edge-line ${selectedEdge === key ? "selected" : ""}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/>`;
+    hits += `<line class="edge-hit" data-edge="${esc(key)}" x1="${e.a.x}" y1="${e.a.y}" x2="${e.b.x}" y2="${e.b.y}"/>`;
   });
   if (ghost) {
     const gc = centroid(ghost.points);
-    html += `<polygon class="ghost-polygon" points="${ghost.points.map(p => `${p.x},${p.y}`).join(" ")}"/>`;
-    (ghost.close || []).forEach(c => { const p = ghost.points[c.at]; html += `<circle class="close-mark ${c.gap > CLOSE_WARN ? "warn" : ""}" cx="${p.x}" cy="${p.y}" r="${t * .022}"/>`; }); // 閉じる頂点を丸で示す
+    ghostFill += `<polygon class="ghost-polygon" points="${ghost.points.map(p => `${p.x},${p.y}`).join(" ")}"/>`;
+    (ghost.close || []).forEach(c => { const p = ghost.points[c.at]; ghostFill += `<circle class="close-mark ${c.gap > CLOSE_WARN ? "warn" : ""}" cx="${p.x}" cy="${p.y}" r="${t * .022}"/>`; }); // 閉じる頂点を丸で示す
     const names = ghost.type === "triangle" ? ["c", "a", "b"] : ["下底", null, "上底", null];
     const measured = ghost.type === "triangle" ? [ghost.dimensions.c, ghost.dimensions.a, ghost.dimensions.b] : [ghost.dimensions.bottom, null, ghost.dimensions.top, null];
     shapeEdges(ghost).forEach((e, i) => {
       if (!names[i] || (i === 0 && ghost.parent)) return; // 接続辺は既存の長さ表示と重なるので出さない
       const m = midpoint(e.a, e.b), dx = m.x - gc.x, dy = m.y - gc.y, l = Math.hypot(dx, dy) || 1;
       // 測った寸法を出す（頂点を既存の点に閉じると、図面上の長さは少し変わるため）
-      html += `<text class="ghost-label" style="font-size:${edgeSize * 1.15}px;stroke-width:${halo}px" x="${m.x + dx / l * edgeSize * 1.6}" y="${m.y + dy / l * edgeSize * 1.6}">${names[i]} ${fmtLen(measured[i] ?? dist(e.a, e.b))}</text>`;
+      texts += `<text class="ghost-label" style="font-size:${edgeSize * 1.15}px;stroke-width:${halo}px" x="${m.x + dx / l * edgeSize * 1.6}" y="${m.y + dy / l * edgeSize * 1.6}">${names[i]} ${fmtLen(measured[i] ?? dist(e.a, e.b))}</text>`;
     });
   }
   vertices.forEach(v => {
     const dx = v.x - center.x, dy = v.y - center.y, l = Math.hypot(dx, dy) || 1;
-    html += `<circle class="vertex-dot" cx="${v.x}" cy="${v.y}" r="${t * .006}"/><text class="vertex-label" style="font-size:${vertexSize}px;stroke-width:${halo}px" x="${v.x + dx / l * vertexSize}" y="${v.y + dy / l * vertexSize}">${v.name}</text>`;
+    texts += `<circle class="vertex-dot" cx="${v.x}" cy="${v.y}" r="${t * .006}"/><text class="vertex-label" style="font-size:${vertexSize}px;stroke-width:${halo}px" x="${v.x + dx / l * vertexSize}" y="${v.y + dy / l * vertexSize}">${v.name}</text>`;
   });
-  return html;
+  return fills + lines + ghostFill + texts + hits;
 }
 function renderCanvas(autoFit = false) {
   if (autoFit) fitView();
@@ -556,6 +560,11 @@ function processSignals() {
   // 重なりの確認を出している間は、次のまとまりを処理しない（確認中の図形が別の寸法に置き換わらないように）
   // 閉じる候補の確認待ち（v13.3）の間も、次のまとまりは処理しない
   if (!state.settings.signalAdd || $("confirmDialog").open || state.closeHold) return false;
+  // 確認待ちを取り消した後は、前の合図では追加しない。新しい合図（「はい」「OK」）が増えたら進める（v13.4）
+  if (state.closeRelease != null) {
+    if (findSignals($("quickInput").value).length <= state.closeRelease) return false;
+    state.closeRelease = null;
+  }
   const k = state.signal.added, { groups } = signalGroups($("quickInput").value, k + 1);
   if (groups.length <= k) return false;
   const targets = quickTargets(), values = groups[k];
@@ -615,7 +624,7 @@ function quickChips(values) { return quickTargets().map((id, i) => `<span class=
 function applyQuickInput() {
   const text = $("quickInput").value, targets = quickTargets();
   if (!text.trim()) { // 入力欄を空にしたら寸法も消す（前の寸法のまま「追加」されないように）
-    resetSignalSession(); state.lastQuick = text; $("quickParsed").innerHTML = quickChips([]); state.autoError = ""; state.closeHold = false; // 空でも「a・b」などの欄は見せる（何を話すか分かるように）
+    resetSignalSession(); state.lastQuick = text; $("quickParsed").innerHTML = quickChips([]); state.autoError = ""; state.closeHold = false; state.closeRelease = null; // 空でも「a・b」などの欄は見せる（何を話すか分かるように）
     state.zoom = { key: null, points: [] }; // 入力欄を空にしたら、広げた拡大範囲も元に戻す（大きな数を読み違えた後など）
     targets.forEach(id => { $(id).value = ""; }); updateQuickNumbers(); updatePreview(); return;
   }
@@ -683,6 +692,12 @@ function buildCandidate() {
   return { shape, warnings, overlap: hits.length > 0, rebuilt, drops, closeInfo, skipped };
 }
 // 閉じる頂点の表示（プレビュー用）。「閉じない／閉じる」のボタン付き
+// 閉じるかどうかの確認待ちを取り消す（v13.4）。そのときの合図の数を覚え、新しい合図が来るまで自動では追加しない
+function releaseCloseHold() {
+  state.closeHold = false;
+  state.closeRelease = findSignals($("quickInput").value).length;
+  logVoice("寸法が変わり閉じる候補が無くなったので、確認待ちを取り消し");
+}
 function closeLine(cand) {
   // 合図で追加しようとして閉じる候補が見つかったとき（v13.3）: 選んでもらうボタン
   if (state.closeHold && cand.closeInfo.length) return `<span class="close-line hold ${cand.closeInfo.some(c => c.warn) ? "warn" : ""}">◎ ${cand.closeInfo.map(c => `頂点 ${c.name} に閉じますか？（ずれ ${c.gap}）`).join("、")} <span class="close-choices"><button type="button" class="close-add" data-close-add="close">閉じて追加</button><button type="button" class="close-add" data-close-add="open">閉じずに追加</button></span></span>`;
@@ -694,6 +709,7 @@ function updatePreview() {
   const box = $("previewBox"), status = $("measureStatus"), filled = requiredFields().every(id => $(id).value.trim() !== "");
   state.candidate = null;
   if (!filled) {
+    if (state.closeHold) releaseCloseHold(); // 寸法が欠けたら、閉じるかどうかの確認待ちは取り消す（v13.4）
     box.className = "preview-box idle";
     box.textContent = "寸法を入れると、ここに面積が、図面に点線で追加位置が表示されます。";
     status.className = `measure-status ${state.autoError ? "error" : "idle"}`;
@@ -702,13 +718,17 @@ function updatePreview() {
   } else {
     try {
       const cand = buildCandidate(); state.candidate = cand;
+      // 確認待ちの後で寸法・接続辺・反転などが変わり、閉じる候補が無くなったら、確認待ちを取り消す（v13.4、Codex 再レビュー P2）
+      if (state.closeHold && !cand.closeInfo.length) releaseCloseHold();
       const editing = editingShape();
       const area = fmt(roundArea(cand.shape.area)), after = fmt(cand.rebuilt ? computeTotal(cand.rebuilt) : computeTotal([...state.shapes, cand.shape]));
+      const redo = state.closeRelease != null ? `<span class="close-line off redo">寸法が変わったため、もう一度「はい」「OK」または「追加」を押してください</span>` : "";
       box.className = `preview-box${cand.warnings.length ? " has-warning" : ""}`;
-      box.innerHTML = `<div class="preview-line"><span>${editing ? "修正後の図形" : "この図形"} <b>${area}</b> m²</span><span>${editing ? "修正後の合計" : "追加後の合計"} <b>${after}</b> m²</span></div>${closeLine(cand)}${cand.warnings.map(w => `<p class="warn">⚠ ${esc(w.text)}</p>`).join("")}`;
+      box.innerHTML = `<div class="preview-line"><span>${editing ? "修正後の図形" : "この図形"} <b>${area}</b> m²</span><span>${editing ? "修正後の合計" : "追加後の合計"} <b>${after}</b> m²</span></div>${closeLine(cand)}${redo}${cand.warnings.map(w => `<p class="warn">⚠ ${esc(w.text)}</p>`).join("")}`;
       status.className = "measure-status";
-      status.innerHTML = `${editing ? "修正後" : "この図形"} <b>${area}</b> m² → 合計 <b>${after}</b> m²${closeLine(cand)}${cand.warnings.map(w => `<span class="warn">⚠ ${esc(w.short)}</span>`).join("")}`;
+      status.innerHTML = `${editing ? "修正後" : "この図形"} <b>${area}</b> m² → 合計 <b>${after}</b> m²${closeLine(cand)}${redo}${cand.warnings.map(w => `<span class="warn">⚠ ${esc(w.short)}</span>`).join("")}`;
     } catch (e) {
+      if (state.closeHold) releaseCloseHold(); // 寸法が成り立たなくなったときも取り消す
       box.className = "preview-box error";
       box.textContent = e.message;
       status.className = "measure-status error";
@@ -721,7 +741,7 @@ function updatePreview() {
 function clearInputs() {
   DIMENSION_FIELDS.forEach(id => $(id).value = "");
   $("quickInput").value = ""; $("quickParsed").innerHTML = quickChips([]); updateQuickNumbers(); resetSignalSession(); state.lastQuick = ""; state.autoError = "";
-  state.zoom = { key: null, points: [] }; state.noClose = false; state.closeHold = false;
+  state.zoom = { key: null, points: [] }; state.noClose = false; state.closeHold = false; state.closeRelease = null;
   $("flipDirection").checked = false;
   document.querySelector('input[name="alignment"][value="center"]').checked = true;
   $("message").textContent = "";
@@ -770,7 +790,7 @@ function addShape({ auto = false, closeChosen = false } = {}) {
   const clearAfterAdd = () => {
     state.autoError = "";
     if (!auto) { clearInputs(); return; }
-    state.noClose = false;
+    state.noClose = false; state.closeRelease = null;
     DIMENSION_FIELDS.forEach(id => $(id).value = "");
     $("flipDirection").checked = false;
     document.querySelector('input[name="alignment"][value="center"]').checked = true;
@@ -794,7 +814,9 @@ function addShape({ auto = false, closeChosen = false } = {}) {
   // 重なるとき・差し替えで消える図形があるときは確認する
   // 閉合差が 5cm を超えるときも確認する（v13.3、Codex レビュー P1）。ただし「閉じて追加」を押したときは選んだ後なので出さない
   const asks = cand.warnings.filter(w => /重な|削除されます/.test(w.text) || (!closeChosen && /とのずれが/.test(w.text))).map(w => w.text);
-  if (asks.length) ask(cand.drops?.length ? "図形が削除されます" : "図形が重なっています", `${asks.join("\n")}\nこのまま${editing ? "修正" : "追加"}しますか？`, commit, editing ? "修正する" : "追加する");
+  // 見出しは、削除・重なり・閉合差で分ける（v13.4、Codex 再レビュー P3）
+  const askTitle = cand.drops?.length ? "図形が削除されます" : cand.overlap ? "図形が重なっています" : "閉合差を確認してください";
+  if (asks.length) ask(askTitle, `${asks.join("\n")}\nこのまま${editing ? "修正" : "追加"}しますか？`, commit, editing ? "修正する" : "追加する");
   else commit();
   return true;
 }
@@ -1262,7 +1284,33 @@ document.addEventListener("visibilitychange", updateWakeLock);
 document.addEventListener("pointerdown", () => { if (state.settings.wakeLock && !state.wakeLock) updateWakeLock(); }, { passive: true });
 window.addEventListener("beforeinstallprompt", e => { e.preventDefault(); state.deferredInstall = e; $("installButton").classList.remove("hidden"); });
 $("installButton").addEventListener("click", async () => { if (!state.deferredInstall) return; state.deferredInstall.prompt(); await state.deferredInstall.userChoice; state.deferredInstall = null; $("installButton").classList.add("hidden"); });
-if ("serviceWorker" in navigator) window.addEventListener("load", () => navigator.serviceWorker.register("./service-worker.js"));
+// ---------- アプリの更新のお知らせ（v13.4） ----------
+// GitHub Pages を更新しても、開いている画面は古い版のまま動く。Service Worker が新しい版で有効になったら版を知らせてくるので、
+// この画面の版と違えば「新しい版があります」を出す。作業中の図面があっても勝手には再読み込みしない（押したときだけ）
+function appVersion() { return (document.querySelector(".app-version")?.textContent || "").replace(/^ver\./, "").trim(); }
+function showUpdateBanner(version) {
+  if (!version || version === appVersion() || state.updateDismissed === version) return;
+  state.updateVersion = version;
+  $("updateText").textContent = `新しい版（ver.${version}）があります。図面を保存してから再読み込みしてください`;
+  $("updateBanner").classList.remove("hidden");
+}
+function reloadForUpdate() {
+  if (!isDirty()) { location.reload(); return; }
+  ask("新しい版に切り替えますか？", "保存していない図面は下書きとして残り、再読み込みの後に戻ります。確実にするなら、先に「図面を保存」してください。", () => { saveDraft(); location.reload(); }, "再読み込み");
+}
+$("updateReload").addEventListener("click", reloadForUpdate);
+$("updateClose").addEventListener("click", () => { state.updateDismissed = state.updateVersion; $("updateBanner").classList.add("hidden"); });
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.addEventListener("message", e => { if (e.data?.type === "version") showUpdateBanner(String(e.data.version)); });
+  window.addEventListener("load", async () => {
+    try {
+      const reg = await navigator.serviceWorker.register("./service-worker.js");
+      navigator.serviceWorker.controller?.postMessage({ type: "version?" }); // 起動時に、今動いている Service Worker の版を尋ねる
+      // ホーム画面のアプリは開きっぱなしのことが多いので、画面に戻ったときに新しい版が無いか確かめる
+      document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") reg.update().catch(() => { }); });
+    } catch { }
+  });
+}
 $("date").value = today();
 const draftRestored = restoreDraft(); // refresh より前に戻す（refresh が空の図面で下書きを消さないように）
 if (!draftRestored) markSaved();
