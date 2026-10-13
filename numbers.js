@@ -43,9 +43,21 @@ function splitGluedDecimals(run) {
   }
   return ` ${out.join(" ")} `;
 }
+// ひらがな・カタカナの数（v13.5）: iPhone の音声入力は「3 はい」を「さんはい」（掛け声）と書くことがある。
+// 数の読みが単独で出てきたとき（前後が文の始め・終わり・空白・数字・句読点・点・合図のとき）だけ数字にする（「田中さん」「ごはん」は読まない）。
+// 「し」「く」は他の言葉と紛れやすいので読まない。長い数（さんじゅう など）は iPhone が数字で書くので扱わない
+const KANA_NUMBER_WORDS = [["きゅう", 9], ["じゅう", 10], ["ぜろ", 0], ["れい", 0], ["まる", 0], ["いち", 1], ["さん", 3], ["よん", 4], ["ろく", 6], ["なな", 7], ["しち", 7], ["はち", 8], ["に", 2], ["ご", 5]];
+const toKatakana = w => w.replace(/[ぁ-ゖ]/g, c => String.fromCharCode(c.charCodeAt(0) + 0x60));
+const KANA_NUMBER = new Map(KANA_NUMBER_WORDS.flatMap(([w, n]) => [[w, n], [toKatakana(w), n]]));
+// 正規表現の候補（v13.6）: 数の読みの一覧から作る（合図の判定用に別の一覧を手で持つと、足し忘れでずれるため）。長い語を先に、特殊文字はエスケープ
+const escapeRe = w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const KANA_NUM_ALT = [...KANA_NUMBER.keys()].sort((a, b) => b.length - a.length).map(escapeRe).join("|");
+const SIGNAL_WORDS = "はーい|はい|ハイ|オッケー|オッケ|オーケー|おっけー|おっけ|おーけー|OK|Ok|ok|oK|杯";
+const KANA_NUMBER_RE = new RegExp(`(?<=^|[\\s\\d、。,.!！?？点]|${SIGNAL_WORDS})(${KANA_NUM_ALT})(?=$|[\\s\\d、。,.!！?？点]|${SIGNAL_WORDS})`, "g");
 // opts.splitGlued: つながった数を分ける（全画面の音声入力だけで使う）。分けたときは opts.glued = true にする
 function normalizeSpokenNumbers(text, opts = {}) {
   let s = String(text ?? "").replace(AREA_UNIT_RE, " ").normalize("NFKC").replace(/てん|ポイント/g, "点").replace(/ゼロ/g, "〇");
+  s = s.replace(KANA_NUMBER_RE, w => ` ${KANA_NUMBER.get(w)} `); // 前後に空白（「さん3」を 33 と読まないように）
   // 「三点〇一」: 点の前は位取り、点の後は1桁ずつ読む
   s = s.replace(/([〇零一二三四五六七八九十百千0-9]+)\s*点\s*([〇零一二三四五六七八九0-9]+)/g, (_, a, b) => `${kanjiInteger(a)}.${digitwise(b)}`);
   s = s.replace(/[〇零一二三四五六七八九十百千]+/g, (k, at, all) => isWordPart(all[at - 1]) || isWordPart(all[at + k.length]) ? " " : kanjiInteger(k));
@@ -88,7 +100,10 @@ function parseArea(text) {
 
 // 計測の合図（「はい」「OK」）の位置を返す。数がそろった後の合図で図形を追加するのに使う
 // 「これはいい」「ハイライト」のように、後ろにかなが続く「はい」「ハイ」は言葉の一部なので合図にしない（「はいっ」は合図）
-const SIGNAL_RE = /(?<![A-Za-zＡ-Ｚａ-ｚ])[OoＯｏ][KkＫｋ](?![A-Za-zＡ-Ｚａ-ｚ])|オッケー?|オーケー|おっけー?|おーけー|(?:はーい|はい|ハイ|ﾊｲ)(?!(?![っッｯ])[ぁ-ゖァ-ヺｦ-ﾝ])/g;
+// v13.5: 「はい」の後に数の読み（さんはいさん → 3 はい 3）が続くときは合図にする。
+// 数字・数の読みの直後の「杯」は、「はい」の書き間違い（iPhone が「3はい」を「3杯」と書くことがある）として合図にする
+// KANA_NUM_ALT は上で数の読みの一覧から作る（v13.6）
+const SIGNAL_RE = new RegExp(`(?<![A-Za-zＡ-Ｚａ-ｚ])[OoＯｏ][KkＫｋ](?![A-Za-zＡ-Ｚａ-ｚ])|オッケー?|オーケー|おっけー?|おーけー|(?:はーい|はい|ハイ|ﾊｲ)(?!(?![っッｯ]|${KANA_NUM_ALT})[ぁ-ゖァ-ヺｦ-ﾝ])|(?<=(?:[0-9０-９〇一二三四五六七八九十]|${KANA_NUM_ALT})\\s*)杯`, "g");
 function findSignals(text) {
   return [...String(text ?? "").matchAll(SIGNAL_RE)].map(m => ({ index: m.index, end: m.index + m[0].length }));
 }

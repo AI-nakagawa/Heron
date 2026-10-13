@@ -472,7 +472,7 @@ function updateQuickNumbers() {
   const el = $("quickNumbers");
   const active = activeQuickText(); // 合図で使い終わった部分より後ろ（今の図形の寸法）だけ
   if (!active.replace(/^[\s、。,.!！?？]+/, "").trim()) { el.innerHTML = ""; return; }
-  const values = parseQuick(active);
+  const values = quickValues();
   el.classList.toggle("guessed", values.glued || !!state.signal.hold); // つながった数を分けたときは色を変えて、確認が要ることを示す
   el.innerHTML = values.length ? values.map(v => `<span>${fmtLen(v)}</span>`).join("") : '<span class="qn-wait">…</span>'; // 数字が無い言葉だけのときは「…」
 }
@@ -541,14 +541,41 @@ function signalGroups(text, limit = Infinity) {
     from = Math.min(barrier.signals, signals.length);
     rest = from ? signals[from - 1].end : 0;
   }
+  // 合図ごとに寸法を確定する（v13.5）: 合図と合図の間の数を見て、
+  //   ・まだ何も確定していなければ、その数をすべて確定（「3.01 4.25 3 はい」のまとめ言いもこれまでどおり。数が多すぎるときは processSignals で止める）
+  //   ・確定済みがあっても、足して必要な数に収まるなら、その区間の数をすべて確定（「3 はい 3.01 4.25 はい」）
+  //   ・必要な数を超えるときは、言い直しや「さん 3」のような重複とみなし、その区間の最後の数だけを確定
+  // 確定した数が必要な数（2つ・3つ）に届いた合図で、1つの図形のまとまりにする
+  let confirmed = [], glued = false, segStart = rest;
   for (const sig of signals.slice(from)) {
     if (groups.length >= limit) break;
     const need = state.signal.needs[groups.length] ?? quickTargets().length;
-    const values = parseQuick(text.slice(rest, sig.index));
-    if (values.length < need) continue; // 1つ目の数字の後の合図などは、次の数字を待つ
-    groups.push(values); rest = sig.end; // 数が多いときもそのまま渡し、processSignals で追加を止める
+    const nums = parseQuick(text.slice(segStart, sig.index)); segStart = sig.end;
+    if (!nums.length) continue; // 数の無い合図（続けて「はい」と言った等）は飛ばす
+    takeNumbers(confirmed, nums, need);
+    glued ||= !!nums.glued;
+    if (confirmed.length < need) continue; // 1つ目の数字の後の合図などは、次の数字を待つ
+    const values = confirmed; values.glued = glued;
+    groups.push(values); rest = sig.end;
+    confirmed = []; glued = false;
   }
   return { groups, rest };
+}
+// 区間の数を確定済みに足す（v13.5。上の決まり）
+function takeNumbers(confirmed, nums, need) {
+  if (!confirmed.length || confirmed.length + nums.length <= need) confirmed.push(...nums); else confirmed.push(nums[nums.length - 1]);
+}
+// 今の図形の寸法として見せる数（v13.5）: signalGroups と同じ決まりで、使い終わった部分より後ろの文字から作る。
+// 最後の合図より後ろの、まだ合図が無い数も同じ決まりで足す（話している途中の寸法を見せるため）
+function quickValues() {
+  const text = activeQuickText(), sigs = findSignals(text);
+  let confirmed = [], glued = false, start = 0;
+  const need = quickTargets().length;
+  const take = nums => { if (!nums.length) return; takeNumbers(confirmed, nums, need); glued ||= !!nums.glued; };
+  for (const sig of sigs) { take(parseQuick(text.slice(start, sig.index))); start = sig.end; }
+  take(parseQuick(text.slice(start)));
+  confirmed.glued = glued;
+  return confirmed;
 }
 // 使い終わったまとまりより後ろの文字（今の図形の寸法）
 function activeQuickText() {
@@ -630,7 +657,7 @@ function applyQuickInput() {
   }
   if (processSignals()) { state.lastQuick = $("quickInput").value; updateQuickNumbers(); return; }
   state.lastQuick = text;
-  const values = parseQuick(activeQuickText());
+  const values = quickValues();
   targets.forEach((id, i) => { $(id).value = values[i] !== undefined ? fmtLen(values[i]) : ""; });
   updateQuickNumbers();
   const chips = quickChips(values);
@@ -755,7 +782,7 @@ function setMode(mode) {
   clearInputs(); updateQuickHint(); updatePreview();
 }
 function swapAB() {
-  const values = parseQuick(activeQuickText());
+  const values = quickValues();
   if (values.length >= 2) {
     [values[0], values[1]] = [values[1], values[0]];
     const hold = values.glued || !!state.signal.hold;
@@ -781,7 +808,7 @@ function addShape({ auto = false, closeChosen = false } = {}) {
   let cand;
   if (!auto && $("quickInput").value.trim()) {
     // 推測で分けた数が必要な数より多いときは、どれが寸法か分からないので「追加」でも追加しない
-    const values = parseQuick(activeQuickText());
+    const values = quickValues();
     if ((values.glued || state.signal.hold) && values.length > quickTargets().length) { $("message").textContent = "数がつながって聞こえたので分けましたが、数が多すぎます。入力欄を空にしてから言い直してください。"; showToast("追加できません：入力欄を空にしてから言い直してください"); return false; }
   }
   try { cand = buildCandidate(); }
@@ -1170,7 +1197,7 @@ $("quickInput").addEventListener("blur", () => {
 $("quickInput").addEventListener("keydown", e => {
   if (e.key !== "Enter" || e.isComposing || e.keyCode === 229) return;
   e.preventDefault();
-  if (parseQuick(activeQuickText()).length >= quickTargets().length) addShape();
+  if (quickValues().length >= quickTargets().length) addShape();
 });
 DIMENSION_FIELDS.forEach(id => {
   $(id).addEventListener("input", () => {
