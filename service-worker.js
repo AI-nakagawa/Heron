@@ -1,5 +1,5 @@
-const CACHE = "field-area-note-v13-1";
-const APP_SHELL = ["./", "./index.html", "./styles.css?v=13.1", "./mobile-input.css?v=13.1", "./features.css?v=13.1", "./numbers.js?v=13.1", "./app.js?v=13.1", "./manifest.webmanifest", "./icons/icon.svg"];
+const CACHE = "field-area-note-v13-3";
+const APP_SHELL = ["./", "./index.html", "./styles.css?v=13.3", "./mobile-input.css?v=13.3", "./features.css?v=13.3", "./numbers.js?v=13.3", "./app.js?v=13.3", "./manifest.webmanifest", "./icons/icon.svg", "./icons/icon-180.png"];
 // cache: "reload" … ブラウザの HTTP キャッシュ（GitHub Pages は約10分）を通さず、公開中の最新ファイルを入れる
 self.addEventListener("install", (event) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(APP_SHELL.map((url) => new Request(url, { cache: "reload" })))).then(() => self.skipWaiting())));
 self.addEventListener("activate", (event) => event.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((key) => key.startsWith("field-area-note-") && key !== CACHE).map((key) => caches.delete(key)))).then(() => self.clients.claim())));
