@@ -76,14 +76,20 @@ function subEdge(edge, part) {
   const L = dist(edge.a, edge.b), u = { x: (edge.b.x - edge.a.x) / L, y: (edge.b.y - edge.a.y) / L };
   if (!(part.d >= 0)) throw Error("起点から点 P までの距離を入れてください。");
   if (!(part.length > 0)) throw Error("底辺の長さを入れてください。");
-  if (part.d + part.length > L + 0.005) throw Error(`点 P から測った底辺（${fmtLen(part.d)} + ${fmtLen(part.length)} m）が、接続する辺の長さ（${fmtLen(L)} m）を超えています。`);
+  if (part.d + part.length > L + 0.005) throw Error(part.d
+    ? `点 P から測った底辺（${fmtLen(part.d)} + ${fmtLen(part.length)} m）が、接続する辺の長さ（${fmtLen(L)} m）を超えています。` // v13.9 の記録
+    : `起点から測った長さ（${fmtLen(part.length)} m）が、接続する辺の長さ（${fmtLen(L)} m）を超えています。`);
   const length = Math.min(part.length, L - part.d); // 5mm 以内のはみ出しは辺の端までにそろえる
   const offset = part.from === "b" ? L - part.d - length : part.d; // 辺の始点（edge.a）から区間の始まりまで
   const a = { x: edge.a.x + u.x * offset, y: edge.a.y + u.y * offset }, b = { x: a.x + u.x * length, y: a.y + u.y * length };
   return { shapeId: edge.shapeId, index: edge.index, a, b, part: { from: part.from === "b" ? "b" : "a", d: part.d, length } };
 }
 // 図形の点のうち、点 P（起点から d m の点）。起点が始点なら底辺の始まり、終点なら底辺の終わり
-function partPoint(shape) { return shape.parent?.part?.from === "b" ? shape.points[1] : shape.points[0]; }
+function partPoint(shape) {
+  const q = shape.parent?.part, fromB = q?.from === "b";
+  if (q && !q.d) return fromB ? shape.points[0] : shape.points[1]; // v14.0: 起点〜P の区間が底辺。P は起点と反対側の端
+  return fromB ? shape.points[1] : shape.points[0];
+}
 function edgeByKey(key) { return freeEdges().find(e => edgeKey(e) === key); }
 function outwardNormal(edge, shapes, flip = false) {
   const dx = edge.b.x - edge.a.x, dy = edge.b.y - edge.a.y, l = Math.hypot(dx, dy), left = { x: -dy / l, y: dx / l };
@@ -547,23 +553,21 @@ function selectEdge(key) {
 }
 function applySharedLength() {
   const edge = lockedEdge(); if (!edge || !baseLocked()) return;
-  if (partialOn()) { // 辺の途中から（v13.9）: 底辺は手で入れる。まだ触っていなければ、点 P から辺の端までの残りを入れておく
-    if (!state.partialCTouched) { const d = num("partialOffset"), rest = dist(edge.a, edge.b) - (Number.isFinite(d) ? d : 0); const v = rest > 0 ? fmtLen(rest) : ""; $("sideC").value = v; $("bottomBase").value = v; }
-    return;
-  }
+  if (partialOn()) return; // 辺の途中まで（v14.0）: c は起点から測った長さを手で入れる
   const l = fmtLen(dist(edge.a, edge.b));
   $("sideC").value = l; $("bottomBase").value = l;
 }
-// 辺の途中から（v13.9）の入力
+// 辺の途中まで（v14.0、障害物を避ける）の入力: 起点（A か B）から辺に沿って c m の区間（起点〜点 P）を、新しい図形の1辺（底辺）にする。
+// 保存の形は v13.9 と同じ part = { from, d, length }（d は起点から区間の始まりまで。v14.0 では常に 0）
 function partialOn() { return baseLocked() && $("partialToggle").checked; }
 function partialFrom() { return document.querySelector('input[name="partialFrom"]:checked').value; }
 function formPart() {
-  const d = num("partialOffset"), length = num(state.mode === "triangle" ? "sideC" : "bottomBase");
-  if (!Number.isFinite(d) || d < 0) throw Error("起点から点 P までの距離を入れてください。");
-  return { from: partialFrom(), d, length };
+  const length = num(state.mode === "triangle" ? "sideC" : "bottomBase");
+  if (!Number.isFinite(length) || length <= 0) throw Error(`${state.mode === "triangle" ? "c に" : "下底に"}、起点から辺に沿って測った長さを入れてください。`);
+  return { from: partialFrom(), d: 0, length };
 }
 function resetPartial() {
-  $("partialToggle").checked = false; $("partialOffset").value = ""; state.partialCTouched = false;
+  $("partialToggle").checked = false;
   document.querySelector('input[name="partialFrom"][value="a"]').checked = true;
 }
 function requiredFields() { return state.mode === "triangle" ? ["sideA", "sideB", "sideC"] : ["topBase", "bottomBase", "height"]; }
@@ -844,9 +848,9 @@ function setMode(mode) {
   document.querySelectorAll(".mode").forEach(b => { const on = b.dataset.mode === mode; b.classList.toggle("active", on); b.setAttribute("aria-checked", String(on)); });
   $("triangleFields").classList.toggle("hidden", mode !== "triangle");
   $("trapezoidFields").classList.toggle("hidden", mode !== "trapezoid");
-  const keep = { on: $("partialToggle").checked, from: partialFrom(), d: $("partialOffset").value }; // 種類を変えても、辺の途中からの設定は残す
+  const keep = { on: $("partialToggle").checked, from: partialFrom() }; // 種類を変えても、辺の途中までの設定は残す
   clearInputs();
-  if (keep.on) { $("partialToggle").checked = true; document.querySelector(`input[name="partialFrom"][value="${keep.from}"]`).checked = true; $("partialOffset").value = keep.d; refreshPartialUi(); applySharedLength(); }
+  if (keep.on) { $("partialToggle").checked = true; document.querySelector(`input[name="partialFrom"][value="${keep.from}"]`).checked = true; refreshPartialUi(); $("sideC").value = ""; $("bottomBase").value = ""; }
   updateQuickHint(); updatePreview();
 }
 function swapAB() {
@@ -923,10 +927,9 @@ function startEdit(id) {
   if (shape.type === "triangle") { $("sideA").value = fmtLen(d.a); $("sideB").value = fmtLen(d.b); $("sideC").value = fmtLen(d.c); }
   else { $("topBase").value = fmtLen(d.top); $("bottomBase").value = fmtLen(d.bottom); $("height").value = fmtLen(d.height); document.querySelector(`input[name="alignment"][value="${shape.alignment}"]`).checked = true; }
   $("flipDirection").checked = !!shape.flip;
-  if (shape.parent?.part) { // 辺の途中から（v13.9）
-    $("partialToggle").checked = true; state.partialCTouched = true;
+  if (shape.parent?.part) { // 辺の途中まで（v14.0）。c（下底）には区間の長さが入っている
+    $("partialToggle").checked = true;
     document.querySelector(`input[name="partialFrom"][value="${shape.parent.part.from}"]`).checked = true;
-    $("partialOffset").value = fmtLen(shape.parent.part.d);
   }
   refresh();
   $("editBanner").scrollIntoView({ behavior: "smooth", block: "center" });
@@ -951,8 +954,9 @@ function refresh() {
   refreshPartialUi();
   const part = partialOn(); // 辺の途中から（v13.9）は、底辺を手で入れる
   $("sideC").readOnly = locked && !part; $("bottomBase").readOnly = locked && !part;
-  $("sideCLabel").textContent = part ? "底辺 c（P から）" : locked ? "接続辺 c" : "辺 c";
-  $("bottomBaseLabel").textContent = part ? "下底（P から）" : locked ? "接続辺（下底）" : "下底";
+  const startName = part ? (() => { const e = lockedEdge(), v = vertexList(state.shapes); return e ? vertexNameOf(partialFrom() === "b" ? e.b : e.a, v) : ""; })() : "";
+  $("sideCLabel").textContent = part ? `c（${startName} から）` : locked ? "接続辺 c" : "辺 c";
+  $("bottomBaseLabel").textContent = part ? `下底（${startName} から）` : locked ? "接続辺（下底）" : "下底";
   $("editBanner").classList.toggle("hidden", !editing);
   $("editBannerText").textContent = editing ? `図形 ${editNo} を修正中（寸法・種類・接続する辺を変えられます）` : "";
   document.querySelectorAll(".mode").forEach(b => b.disabled = false); // 差し替え（v13.2）: 修正中も三角形⇔台形を変えられる
@@ -988,7 +992,7 @@ function syncMeasureTools() {
   $("measureUndo").disabled = !state.shapes.length || !!editing;
   $("measureAdd").textContent = editing ? "修正" : "追加";
   const vertices = vertexList(state.shapes);
-  const partInfo = partialOn() ? (() => { try { const q = formPart(); return `の途中（${q.from === "b" ? vertexNameOf(edge.b, vertices) : vertexNameOf(edge.a, vertices)} から ${fmtLen(q.d)} m）`; } catch { return "の途中"; } })() : "";
+  const partInfo = partialOn() ? (() => { try { const q = formPart(); return `の途中まで（${q.from === "b" ? vertexNameOf(edge.b, vertices) : vertexNameOf(edge.a, vertices)} から ${fmtLen(q.length)} m）`; } catch { return "の途中"; } })() : "";
   $("measureEdge").textContent = editing ? `図形 ${state.shapes.indexOf(editing) + 1} を修正中` : edge && locked ? `接続辺 ${vertexNameOf(edge.a, vertices)}–${vertexNameOf(edge.b, vertices)}${partInfo}（${fmtLen(dist(edge.a, edge.b))} m）` : "";
   $("measureEdgeBadge").textContent = $("measureEdge").textContent; // 詰めた表示では説明の行を隠し、図面の上に出す
   const zoom = $("measureZoom");
@@ -1036,7 +1040,8 @@ function partLabel(s, shapes, vertices) {
   const q = s.parent?.part; if (!q) return "";
   const parent = shapes.find(x => x.id === s.parent.shapeId); if (!parent) return "";
   const e = edgeOf(parent, s.parent.index), na = vertexNameOf(e.a, vertices), nb = vertexNameOf(e.b, vertices), start = q.from === "b" ? nb : na;
-  return `辺 ${na}–${nb} の途中から（${start} から ${fmtLen(q.d)} m の点 ${vertexNameOf(partPoint(s), vertices)}、底辺 ${fmtLen(q.length)} m）`;
+  if (!q.d) return `辺 ${na}–${nb} の途中まで（${start} から ${fmtLen(q.length)} m の点 ${vertexNameOf(partPoint(s), vertices)} まで）`; // v14.0
+  return `辺 ${na}–${nb} の途中から（${start} から ${fmtLen(q.d)} m の点 ${vertexNameOf(partPoint(s), vertices)}、底辺 ${fmtLen(q.length)} m）`; // v13.9 の記録
 }
 function renderParts() {
   const vertices = vertexList(state.shapes);
@@ -1290,11 +1295,9 @@ $("flipDirection").addEventListener("change", updatePreview);
 $("swapButton").addEventListener("click", swapAB);
 $("cancelEditButton").addEventListener("click", cancelEdit);
 // 辺の途中から（v13.9）
-$("partialToggle").addEventListener("change", () => { state.partialCTouched = false; refresh(); });
-document.querySelectorAll('input[name="partialFrom"]').forEach(r => r.addEventListener("change", () => updatePreview()));
-$("partialOffset").addEventListener("input", () => { applySharedLength(); updatePreview(); });
-$("partialOffset").addEventListener("change", () => { const v = parseLength($("partialOffset").value); if (Number.isFinite(v)) $("partialOffset").value = fmtLen(v); applySharedLength(); updatePreview(); });
-["sideC", "bottomBase"].forEach(id => $(id).addEventListener("input", () => { if (partialOn()) state.partialCTouched = true; })); // 底辺を手で直したら、残りの長さで上書きしない
+// チェックを入れたら c（下底）を空にして、起点から測った長さを入れてもらう
+$("partialToggle").addEventListener("change", () => { if ($("partialToggle").checked) { $("sideC").value = ""; $("bottomBase").value = ""; } refresh(); });
+document.querySelectorAll('input[name="partialFrom"]').forEach(r => r.addEventListener("change", () => refresh()));
 $("edgeSelect").addEventListener("change", e => { selectEdge(e.target.value); applySharedLength(); updatePreview(); });
 $("drawingCanvas").addEventListener("click", e => {
   const hit = e.target.closest("[data-edge]"); if (!hit || !selectEdge(hit.dataset.edge)) return;
