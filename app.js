@@ -59,7 +59,31 @@ function alignment() { return document.querySelector('input[name="alignment"]:ch
 function edgeOf(shape, index) { return { shapeId: shape.id, index, a: shape.points[index], b: shape.points[(index + 1) % shape.points.length] }; }
 function shapeEdges(shape) { return shape.points.map((_, i) => edgeOf(shape, i)); }
 function edgeKey(e) { return `${e.shapeId}:${e.index}`; }
-function freeEdges(shapes = state.shapes) { const all = shapes.flatMap(shapeEdges); return all.filter((e, i) => !all.some((o, j) => j !== i && sameEdge(e.a, e.b, o.a, o.b))); }
+// 外周の辺: ほかの図形と共有していない辺。v13.9: 辺の途中からつないだ図形の底辺は、親の辺の中に収まっている（内側の辺）ので外周に含めない。
+// 親の辺は、つないでいない残りの部分があるので外周に残す
+function onSegment(p, a, b, tol = 1e-6) {
+  const L = dist(a, b); if (L < tol) return false;
+  const cross = Math.abs((b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x)) / L, t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / (L * L);
+  return cross < tol && t > -tol / L && t < 1 + tol / L;
+}
+function edgeInside(e, o) { return onSegment(e.a, o.a, o.b) && onSegment(e.b, o.a, o.b); }
+function freeEdges(shapes = state.shapes) { const all = shapes.flatMap(shapeEdges); return all.filter((e, i) => !all.some((o, j) => j !== i && (sameEdge(e.a, e.b, o.a, o.b) || edgeInside(e, o)))); }
+// ---------- 辺の途中から（v13.9、障害物を避けるとき） ----------
+// 接続する辺 A–B の途中の点 P（起点から d m）から、辺に沿って長さ length の区間を底辺にする。
+// part = { from: "a"|"b"（起点が辺の始点か終点か）, d: 起点から P までの距離, length: 底辺の長さ }。
+// 起点から測った距離で持つので、前の図形を直して辺の長さが変わっても「B から 1.2 m」の位置を保つ
+function subEdge(edge, part) {
+  const L = dist(edge.a, edge.b), u = { x: (edge.b.x - edge.a.x) / L, y: (edge.b.y - edge.a.y) / L };
+  if (!(part.d >= 0)) throw Error("起点から点 P までの距離を入れてください。");
+  if (!(part.length > 0)) throw Error("底辺の長さを入れてください。");
+  if (part.d + part.length > L + 0.005) throw Error(`点 P から測った底辺（${fmtLen(part.d)} + ${fmtLen(part.length)} m）が、接続する辺の長さ（${fmtLen(L)} m）を超えています。`);
+  const length = Math.min(part.length, L - part.d); // 5mm 以内のはみ出しは辺の端までにそろえる
+  const offset = part.from === "b" ? L - part.d - length : part.d; // 辺の始点（edge.a）から区間の始まりまで
+  const a = { x: edge.a.x + u.x * offset, y: edge.a.y + u.y * offset }, b = { x: a.x + u.x * length, y: a.y + u.y * length };
+  return { shapeId: edge.shapeId, index: edge.index, a, b, part: { from: part.from === "b" ? "b" : "a", d: part.d, length } };
+}
+// 図形の点のうち、点 P（起点から d m の点）。起点が始点なら底辺の始まり、終点なら底辺の終わり
+function partPoint(shape) { return shape.parent?.part?.from === "b" ? shape.points[1] : shape.points[0]; }
 function edgeByKey(key) { return freeEdges().find(e => edgeKey(e) === key); }
 function outwardNormal(edge, shapes, flip = false) {
   const dx = edge.b.x - edge.a.x, dy = edge.b.y - edge.a.y, l = Math.hypot(dx, dy), left = { x: -dy / l, y: dx / l };
@@ -159,9 +183,13 @@ function rebuildShapes(specs) {
       edge = edgeOf(parent, spec.parent.index);
     }
     let shape;
-    try { shape = buildShape(spec, edge, built); }
+    try {
+      if (edge && spec.parent.part) edge = subEdge(edge, spec.parent.part); // 辺の途中から（v13.9）
+      shape = buildShape(spec, edge, built);
+    }
     catch (e) { throw Error(`図形 ${i + 1} が成り立たなくなります：${e.message}`); }
     shape.id = spec.id;
+    if (edge?.part) shape.parent.part = edge.part;
     if (spec.close?.length) applyClose(shape, spec.close, built, spec.points);
     built.push(shape);
   });
@@ -252,6 +280,12 @@ function sanitizeShape(s) {
     const p = s.parent;
     if (p !== null && !(p && isId(p.shapeId) && Number.isInteger(p.index) && p.index >= 0 && p.index < 4)) return null;
     out.parent = p ? { shapeId: p.shapeId, index: p.index } : null; out.flip = s.flip === true;
+    // 辺の途中から（v13.9）。形が正しくなければ記録ごと読まない（底辺の位置が分からなくなるため）
+    if (p?.part !== undefined) {
+      const q = p.part;
+      if (!(q && (q.from === "a" || q.from === "b") && isNum(q.d) && q.d >= 0 && isNum(q.length) && q.length > 0)) return null;
+      out.parent.part = { from: q.from, d: q.d, length: q.length };
+    }
   }
   // 閉じた頂点（v13.2）。形が正しくないものは捨てる（図形自体は残す）
   if (Array.isArray(s.close)) {
@@ -408,7 +442,7 @@ function svgMarkup(shapes, { viewBox, selectedEdge = null, ghost = null, interac
     const names = ghost.type === "triangle" ? ["c", "a", "b"] : ["下底", null, "上底", null];
     const measured = ghost.type === "triangle" ? [ghost.dimensions.c, ghost.dimensions.a, ghost.dimensions.b] : [ghost.dimensions.bottom, null, ghost.dimensions.top, null];
     shapeEdges(ghost).forEach((e, i) => {
-      if (!names[i] || (i === 0 && ghost.parent)) return; // 接続辺は既存の長さ表示と重なるので出さない
+      if (!names[i] || (i === 0 && ghost.parent && !ghost.parent.part)) return; // 接続辺は既存の長さ表示と重なるので出さない（辺の途中からのときは出す）
       const m = midpoint(e.a, e.b), dx = m.x - gc.x, dy = m.y - gc.y, l = Math.hypot(dx, dy) || 1;
       // 測った寸法を出す（頂点を既存の点に閉じると、図面上の長さは少し変わるため）
       texts += `<text class="ghost-label" style="font-size:${edgeSize * 1.15}px;stroke-width:${halo}px" x="${m.x + dx / l * edgeSize * 1.6}" y="${m.y + dy / l * edgeSize * 1.6}">${names[i]} ${fmtLen(measured[i] ?? dist(e.a, e.b))}</text>`;
@@ -513,8 +547,24 @@ function selectEdge(key) {
 }
 function applySharedLength() {
   const edge = lockedEdge(); if (!edge || !baseLocked()) return;
+  if (partialOn()) { // 辺の途中から（v13.9）: 底辺は手で入れる。まだ触っていなければ、点 P から辺の端までの残りを入れておく
+    if (!state.partialCTouched) { const d = num("partialOffset"), rest = dist(edge.a, edge.b) - (Number.isFinite(d) ? d : 0); const v = rest > 0 ? fmtLen(rest) : ""; $("sideC").value = v; $("bottomBase").value = v; }
+    return;
+  }
   const l = fmtLen(dist(edge.a, edge.b));
   $("sideC").value = l; $("bottomBase").value = l;
+}
+// 辺の途中から（v13.9）の入力
+function partialOn() { return baseLocked() && $("partialToggle").checked; }
+function partialFrom() { return document.querySelector('input[name="partialFrom"]:checked').value; }
+function formPart() {
+  const d = num("partialOffset"), length = num(state.mode === "triangle" ? "sideC" : "bottomBase");
+  if (!Number.isFinite(d) || d < 0) throw Error("起点から点 P までの距離を入れてください。");
+  return { from: partialFrom(), d, length };
+}
+function resetPartial() {
+  $("partialToggle").checked = false; $("partialOffset").value = ""; state.partialCTouched = false;
+  document.querySelector('input[name="partialFrom"][value="a"]').checked = true;
 }
 function requiredFields() { return state.mode === "triangle" ? ["sideA", "sideB", "sideC"] : ["topBase", "bottomBase", "height"]; }
 function quickTargets() { const locked = baseLocked(); return state.mode === "triangle" ? (locked ? ["sideA", "sideB"] : ["sideA", "sideB", "sideC"]) : (locked ? ["topBase", "height"] : ["topBase", "bottomBase", "height"]); }
@@ -685,12 +735,14 @@ function applyQuickInput() {
   updatePreview();
 }
 function buildCandidate() {
-  const editing = editingShape(), edge = lockedEdge(), flip = $("flipDirection").checked;
-  if (!editing && state.shapes.length && !edge) throw Error("接続する辺を選択してください。");
+  const editing = editingShape(), fullEdge = lockedEdge(), flip = $("flipDirection").checked;
+  if (!editing && state.shapes.length && !fullEdge) throw Error("接続する辺を選択してください。");
+  const edge = fullEdge && partialOn() ? subEdge(fullEdge, formPart()) : fullEdge; // 辺の途中から（v13.9）
   const spec = state.mode === "triangle"
     ? { type: "triangle", dimensions: { a: num("sideA"), b: num("sideB"), c: num("sideC") }, flip }
     : { type: "trapezoid", dimensions: { top: num("topBase"), bottom: num("bottomBase"), height: num("height") }, alignment: alignment(), flip };
   let shape = buildShape(spec, edge, state.shapes);
+  if (edge?.part) shape.parent.part = edge.part;
   const warnings = [];
   let rebuilt = null, drops = [], closeFound = [];
   if (editing) {
@@ -784,6 +836,7 @@ function clearInputs() {
   $("flipDirection").checked = false;
   document.querySelector('input[name="alignment"][value="center"]').checked = true;
   $("message").textContent = "";
+  resetPartial();
   applySharedLength();
 }
 function setMode(mode) {
@@ -791,7 +844,10 @@ function setMode(mode) {
   document.querySelectorAll(".mode").forEach(b => { const on = b.dataset.mode === mode; b.classList.toggle("active", on); b.setAttribute("aria-checked", String(on)); });
   $("triangleFields").classList.toggle("hidden", mode !== "triangle");
   $("trapezoidFields").classList.toggle("hidden", mode !== "trapezoid");
-  clearInputs(); updateQuickHint(); updatePreview();
+  const keep = { on: $("partialToggle").checked, from: partialFrom(), d: $("partialOffset").value }; // 種類を変えても、辺の途中からの設定は残す
+  clearInputs();
+  if (keep.on) { $("partialToggle").checked = true; document.querySelector(`input[name="partialFrom"][value="${keep.from}"]`).checked = true; $("partialOffset").value = keep.d; refreshPartialUi(); applySharedLength(); }
+  updateQuickHint(); updatePreview();
 }
 function swapAB() {
   const values = quickValues();
@@ -867,10 +923,22 @@ function startEdit(id) {
   if (shape.type === "triangle") { $("sideA").value = fmtLen(d.a); $("sideB").value = fmtLen(d.b); $("sideC").value = fmtLen(d.c); }
   else { $("topBase").value = fmtLen(d.top); $("bottomBase").value = fmtLen(d.bottom); $("height").value = fmtLen(d.height); document.querySelector(`input[name="alignment"][value="${shape.alignment}"]`).checked = true; }
   $("flipDirection").checked = !!shape.flip;
+  if (shape.parent?.part) { // 辺の途中から（v13.9）
+    $("partialToggle").checked = true; state.partialCTouched = true;
+    document.querySelector(`input[name="partialFrom"][value="${shape.parent.part.from}"]`).checked = true;
+    $("partialOffset").value = fmtLen(shape.parent.part.d);
+  }
   refresh();
   $("editBanner").scrollIntoView({ behavior: "smooth", block: "center" });
 }
 function cancelEdit() { state.editingId = null; state.editParentKey = null; clearInputs(); refresh(); }
+// 辺の途中から（v13.9）の欄: 接続するときだけ出す。起点のボタンには辺の両端の頂点名を出す
+function refreshPartialUi() {
+  const locked = baseLocked(), edge = lockedEdge(), vertices = vertexList(state.shapes);
+  $("partialToggle").closest(".partial-toggle").classList.toggle("hidden", !locked);
+  $("partialPanel").classList.toggle("hidden", !partialOn());
+  if (edge) { $("partialFromA").textContent = `${vertexNameOf(edge.a, vertices)} から`; $("partialFromB").textContent = `${vertexNameOf(edge.b, vertices)} から`; }
+}
 function refresh() {
   const has = state.shapes.length > 0, editing = editingShape(), locked = baseLocked();
   const editNo = editing ? state.shapes.indexOf(editing) + 1 : 0;
@@ -880,9 +948,11 @@ function refresh() {
   $("flipField").classList.toggle("hidden", !locked);
   $("stepNumber").textContent = has && (!editing || editing.parent) ? "2" : "1";
   $("stepNumber").parentElement.lastChild.textContent = editing ? ". 図形の種類と寸法" : ". 追加する図形";
-  $("sideC").readOnly = locked; $("bottomBase").readOnly = locked;
-  $("sideCLabel").textContent = locked ? "接続辺 c" : "辺 c";
-  $("bottomBaseLabel").textContent = locked ? "接続辺（下底）" : "下底";
+  refreshPartialUi();
+  const part = partialOn(); // 辺の途中から（v13.9）は、底辺を手で入れる
+  $("sideC").readOnly = locked && !part; $("bottomBase").readOnly = locked && !part;
+  $("sideCLabel").textContent = part ? "底辺 c（P から）" : locked ? "接続辺 c" : "辺 c";
+  $("bottomBaseLabel").textContent = part ? "下底（P から）" : locked ? "接続辺（下底）" : "下底";
   $("editBanner").classList.toggle("hidden", !editing);
   $("editBannerText").textContent = editing ? `図形 ${editNo} を修正中（寸法・種類・接続する辺を変えられます）` : "";
   document.querySelectorAll(".mode").forEach(b => b.disabled = false); // 差し替え（v13.2）: 修正中も三角形⇔台形を変えられる
@@ -908,6 +978,7 @@ function renderSummary() {
 function measureOpen() { return !$("measureOverlay").hidden; }
 function focusQuick() { const input = $("quickInput"); if (document.activeElement === input) return; input.focus({ preventScroll: true }); try { input.setSelectionRange(input.value.length, input.value.length); } catch { } }
 function syncMeasureTools() {
+  refreshPartialUi(); // 辺を選び直したときも、起点のボタンの頂点名を合わせる（v13.9）
   const editing = editingShape(), locked = baseLocked(), edge = lockedEdge();
   $("measureMode").textContent = state.mode === "triangle" ? "△ 三角形" : "▱ 台形";
   $("measureMode").disabled = false;
@@ -917,7 +988,8 @@ function syncMeasureTools() {
   $("measureUndo").disabled = !state.shapes.length || !!editing;
   $("measureAdd").textContent = editing ? "修正" : "追加";
   const vertices = vertexList(state.shapes);
-  $("measureEdge").textContent = editing ? `図形 ${state.shapes.indexOf(editing) + 1} を修正中` : edge && locked ? `接続辺 ${vertexNameOf(edge.a, vertices)}–${vertexNameOf(edge.b, vertices)}（${fmtLen(dist(edge.a, edge.b))} m）` : "";
+  const partInfo = partialOn() ? (() => { try { const q = formPart(); return `の途中（${q.from === "b" ? vertexNameOf(edge.b, vertices) : vertexNameOf(edge.a, vertices)} から ${fmtLen(q.d)} m）`; } catch { return "の途中"; } })() : "";
+  $("measureEdge").textContent = editing ? `図形 ${state.shapes.indexOf(editing) + 1} を修正中` : edge && locked ? `接続辺 ${vertexNameOf(edge.a, vertices)}–${vertexNameOf(edge.b, vertices)}${partInfo}（${fmtLen(dist(edge.a, edge.b))} m）` : "";
   $("measureEdgeBadge").textContent = $("measureEdge").textContent; // 詰めた表示では説明の行を隠し、図面の上に出す
   const zoom = $("measureZoom");
   zoom.classList.toggle("hidden", state.shapes.length < 2);
@@ -959,14 +1031,22 @@ function closeMeasure(fromHistory = false) {
   if (!fromHistory && history.state?.measure) history.back();
   renderCanvas(true);
 }
+// 辺の途中から（v13.9）の説明: 「辺 A–B の途中から（A から 1.2 m の点 P、底辺 2.5 m）」
+function partLabel(s, shapes, vertices) {
+  const q = s.parent?.part; if (!q) return "";
+  const parent = shapes.find(x => x.id === s.parent.shapeId); if (!parent) return "";
+  const e = edgeOf(parent, s.parent.index), na = vertexNameOf(e.a, vertices), nb = vertexNameOf(e.b, vertices), start = q.from === "b" ? nb : na;
+  return `辺 ${na}–${nb} の途中から（${start} から ${fmtLen(q.d)} m の点 ${vertexNameOf(partPoint(s), vertices)}、底辺 ${fmtLen(q.length)} m）`;
+}
 function renderParts() {
   const vertices = vertexList(state.shapes);
   $("partsSection").classList.toggle("hidden", !state.shapes.length);
   $("partsList").innerHTML = state.shapes.map((s, i) => {
     const thin = s.type === "triangle" && minAngle(s) < THIN_ANGLE_DEG;
     const closes = (s.close || []).map(c => closeText(c, state.shapes, vertices));
+    const partText = partLabel(s, state.shapes, vertices);
     const closeBadge = closes.length ? `<small class="close-badge ${closes.some(c => c.warn) ? "warn" : ""}">◎ ${closes.map(c => `頂点 ${c.name} に閉合（ずれ ${c.gap}）`).join("、")}</small>` : "";
-    return `<div class="part-row ${s.id === state.editingId ? "editing" : ""}"><span class="part-number">${i + 1}</span><div><strong>${s.type === "triangle" ? "三角形" : "台形"}${s.type === "trapezoid" ? `・${{ left: "左", center: "中央", right: "右" }[s.alignment]}揃え` : ""}（${shapeVertexText(s, vertices)}）</strong><small>${dimensionText(s)}</small>${closeBadge}${thin ? `<small class="thin-badge">⚠ 最小角 ${minAngle(s).toFixed(1)}°</small>` : ""}</div><div class="part-area">${fmt(roundArea(s.area))} m²</div><div class="part-buttons"><button type="button" class="part-edit" data-edit-shape="${esc(s.id)}">修正</button><button type="button" class="part-delete" data-delete-shape="${esc(s.id)}" ${state.editingId ? "disabled" : ""}>削除</button></div></div>`;
+    return `<div class="part-row ${s.id === state.editingId ? "editing" : ""}"><span class="part-number">${i + 1}</span><div><strong>${s.type === "triangle" ? "三角形" : "台形"}${s.type === "trapezoid" ? `・${{ left: "左", center: "中央", right: "右" }[s.alignment]}揃え` : ""}（${shapeVertexText(s, vertices)}）</strong><small>${dimensionText(s)}</small>${partText ? `<small class="part-badge">◇ ${partText}</small>` : ""}${closeBadge}${thin ? `<small class="thin-badge">⚠ 最小角 ${minAngle(s).toFixed(1)}°</small>` : ""}</div><div class="part-area">${fmt(roundArea(s.area))} m²</div><div class="part-buttons"><button type="button" class="part-edit" data-edit-shape="${esc(s.id)}">修正</button><button type="button" class="part-delete" data-delete-shape="${esc(s.id)}" ${state.editingId ? "disabled" : ""}>削除</button></div></div>`;
   }).join("");
 }
 // 途中の図形を削除する（v13.2）。その図形につながっている先の図形も行き場が無くなるので一緒に削除する（確認してから）
@@ -1065,35 +1145,7 @@ function switchView(view) {
   if (view === "history") renderHistory();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
-// ---------- PDF の算出根拠（v13.0） ----------
-// 各図形の面積を、どの式にどの値を入れて出したかを PDF の表に書く（三角形はヘロンの公式、台形は台形の公式）。計算は丸める前の値で行い、最後に面積の丸め方で丸める
-// 途中の値: 小数第4位まで。0.01 未満の小さな値は有効数字3桁まで出す（0 と表示されて、成り立たない三角形に見えないように）
-function calcText(v) { const a = Math.abs(v), d = a > 0 && a < 0.01 ? Math.min(12, 2 - Math.floor(Math.log10(a))) : 4; return String(Number(Number(v).toFixed(d))); }
-function calcEq(v) { return Math.abs(Number(calcText(v)) - v) < 1e-12 ? "=" : "≒"; } // 表示を丸めたら「≒」
-// 辺の長さ: 入力した寸法は小数第3位まで。接続辺のように図面から決まる長さで端数があるときは小数第6位まで出す
-function lenText(v) { return Math.abs(v - Number(v.toFixed(3))) < 1e-9 ? fmtLen(v) : String(Number(v.toFixed(6))); }
-// PDF の寸法: どの辺かを頂点の名前で添える（三角形の点は [c の始点, c の終点, 頂点]、台形は [下底の始点, 下底の終点, 上底の終点, 上底の始点]）
-function printDimensionText(s, vertices) {
-  const n = s.points.map(p => vertexNameOf(p, vertices)), d = s.dimensions;
-  return s.type === "triangle"
-    ? `a ${lenText(d.a)}m（${n[1]}–${n[2]}）/ b ${lenText(d.b)}m（${n[0]}–${n[2]}）/ c ${lenText(d.c)}m（${n[0]}–${n[1]}）`
-    : `上底 ${lenText(d.top)}m（${n[3]}–${n[2]}）/ 下底 ${lenText(d.bottom)}m（${n[0]}–${n[1]}）/ 高さ ${lenText(d.height)}m`;
-}
-// 面積の結果: 丸める前の値を出し、丸めで変わるときは「≒ 丸めた面積」を続ける
-function areaResult(raw, ro) {
-  const rounded = roundArea(raw, ro), shown = calcText(raw);
-  // 丸めても値が変わらないときは、面積の桁数で書く（「= 6.000 m²」）
-  return Number(shown) === rounded ? `${calcEq(raw)} ${fmt(rounded, ro.digits)} m²` : `${calcEq(raw)} ${shown} ≒ ${fmt(rounded, ro.digits)} m²`;
-}
-function areaBasis(s, ro) {
-  const d = s.dimensions;
-  if (s.type === "triangle") {
-    const S = (d.a + d.b + d.c) / 2, f = [S, S - d.a, S - d.b, S - d.c], P = f.reduce((x, y) => x * y, 1);
-    const eqP = f.every(v => calcEq(v) === "=") && calcEq(P) === "=" && Math.abs(f.map(v => Number(calcText(v))).reduce((x, y) => x * y, 1) - Number(calcText(P))) < 1e-9 ? "=" : "≒";
-    return `S = (${lenText(d.a)} + ${lenText(d.b)} + ${lenText(d.c)}) ÷ 2 ${calcEq(S)} ${calcText(S)}<br>A = √(${f.map(calcText).join(" × ")}) ${eqP} √${calcText(P)} ${areaResult(Math.sqrt(P), ro)}`;
-  }
-  return `A = (${lenText(d.top)} + ${lenText(d.bottom)}) × ${lenText(d.height)} ÷ 2 ${areaResult((d.top + d.bottom) * d.height / 2, ro)}`;
-}
+// ---------- PDF（v13.8: 既存のソフトの様式に合わせ、寸法・算出根拠の欄は廃止。表は No.・a・b・c・s・面積） ----------
 // 合計の根拠（v13.1）: 表の「面積」の列と同じ、丸めた各面積を面積の桁数（既定は小数第3位）で並べる。
 // 「合計してから丸め」では、並べた値の和と合計が端数で合わないことがあるので、そのときは「≒」にする
 function totalBasis(shapes, ro, total) {
@@ -1101,13 +1153,15 @@ function totalBasis(shapes, ro, total) {
   const eq = Math.abs(Number(parts.reduce((x, p) => x + p, 0).toFixed(ro.digits)) - total) < 1e-9 ? "=" : "≒";
   return `合計 = ${parts.map(p => fmt(p, ro.digits)).join(" + ")} ${eq} ${fmt(total, ro.digits)} m²`;
 }
-// PDF の閉合の記録（v13.3、Codex レビュー P1）: 図面は頂点を既存の点に合わせて描くので、図面の辺の長さと寸法が少し違うことがある。
-// どの頂点に閉じたか・閉合差・面積は実測寸法で計算したことを、閉じた図形の算出根拠の欄に書く。5cm 超は ⚠
-function printCloseNote(s, shapes, vertices) {
-  return (s.close || []).map(c => {
-    const t = closeText(c, shapes, vertices);
-    return `<br><span class="print-close ${t.warn ? "warn" : ""}">${t.warn ? "⚠" : "◎"} 頂点 ${t.name} に閉合（閉合差 ${t.gap}）：図面は頂点を合わせて描画、面積は実測寸法で計算</span>`;
-  }).join("");
+// PDF の表（v13.8、既存のソフトの出力様式に合わせる）: No.・a・b・c・s・面積。s = (a + b + c) ÷ 2（ヘロンの公式の S）。
+// 長さは小数第3位まで（m）、面積は面積の丸め方で。台形は a・b・c の欄に上底・下底・高さを入れ、s の欄は「台形」
+function printLen(v) { return Number(v).toFixed(3); }
+function printRow(s, i, ro) {
+  const d = s.dimensions;
+  const cells = s.type === "triangle"
+    ? [printLen(d.a), printLen(d.b), printLen(d.c), printLen((d.a + d.b + d.c) / 2)]
+    : [`上底 ${printLen(d.top)}`, `下底 ${printLen(d.bottom)}`, `高さ ${printLen(d.height)}`, "台形"];
+  return `<tr><td class="print-no">${i + 1}</td>${cells.map(c => `<td class="print-num">${c}</td>`).join("")}<td class="print-area">${fmt(roundArea(s.area, ro), ro.digits)}</td></tr>`;
 }
 function printRecord(record = null) {
   const design = designNum();
@@ -1115,10 +1169,16 @@ function printRecord(record = null) {
   if (!r.shapes.length) return;
   const ro = record ? recordRounding(record) : currentRounding(); // 保存した記録は保存時の丸め方で出す
   const viewBox = viewBoxFor(r.shapes.flatMap(s => s.points)), vertices = vertexList(r.shapes), total = computeTotal(r.shapes, ro), diff = diffText(total, r.designArea, ro.digits);
-  // A4 縦に収めるため、図形が多いほど図面を低くする（3つまで 105mm、4つ 92mm、5つ 80mm、6つ以上 70mm。それ以上は2ページ目へ）
-  const svgHeight = r.shapes.length <= 3 ? 105 : r.shapes.length === 4 ? 92 : r.shapes.length === 5 ? 80 : 70;
+  // A4 縦に収めるため、図形が多いほど図面を低くする（v13.8: 表が1図形1行になったので、110mm から1行ごとに 6.5mm 低くし、60mm まで）
+  const svgHeight = Math.max(60, Math.min(110, 180 - 6.5 * r.shapes.length));
+  // 閉合の記録（v13.3〜）: 閉じた図形があるときだけ、表の下に1行ずつ出す
+  const partNotes = r.shapes.map((s, i) => { const t = partLabel(s, r.shapes, vertices); return t ? `<div class="print-close part">※ No.${i + 1}：${t}</div>` : ""; }).join(""); // 辺の途中から（v13.9）
+  const closeNotes = partNotes + r.shapes.flatMap((s, i) => (s.close || []).map(c => {
+    const t = closeText(c, r.shapes, vertices);
+    return `<div class="print-close ${t.warn ? "warn" : ""}">${t.warn ? "⚠" : "※"} No.${i + 1}：頂点 ${t.name} に閉合（閉合差 ${t.gap}）。図面は頂点を合わせて描画、面積は実測寸法で計算</div>`;
+  })).join("");
   const svg = `<svg class="print-svg" style="height:${svgHeight}mm" viewBox="${viewBox}" xmlns="http://www.w3.org/2000/svg">${svgMarkup(r.shapes, { viewBox })}</svg>`;
-  $("printSheet").innerHTML = `<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table><thead><tr><th>No.</th><th>寸法</th><th>算出根拠</th><th>面積</th></tr></thead><tbody>${r.shapes.map((s, i) => `<tr><td class="print-no">${i + 1}</td><td class="print-dim">${esc(printDimensionText(s, vertices)).split("/ ").map(p => `<span class="nb">${p}</span>`).join("/ ")}</td><td class="print-basis">${areaBasis(s, ro)}${printCloseNote(s, r.shapes, vertices)}</td><td class="print-area">${fmt(roundArea(s.area, ro), ro.digits)} m²</td></tr>`).join("")}</tbody></table><div class="print-total">合計面積 ${fmt(total, ro.digits)} m²</div><div class="print-total-basis">${totalBasis(r.shapes, ro, total)}</div>${r.designArea ? `<div class="print-design">設計面積 ${fmt(r.designArea, ro.digits)} m² ／ 差 ${diff}</div>` : ""}<div class="print-rounding">${roundingNote(ro)}</div>${r.memo ? `<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>` : ""}`;
+  $("printSheet").innerHTML = `<h1>現場面積図面</h1><div class="print-meta"><div><b>名称・測点名：</b>${esc(r.name)}</div><div><b>日付：</b>${esc(r.date)}</div></div>${svg}<table class="print-table"><thead><tr><th>No.</th><th>a (m)</th><th>b (m)</th><th>c (m)</th><th>s (m)</th><th>面積 (m²)</th></tr></thead><tbody>${r.shapes.map((s, i) => printRow(s, i, ro)).join("")}</tbody></table>${closeNotes}<div class="print-total">合計面積 ${fmt(total, ro.digits)} m²</div><div class="print-total-basis">${totalBasis(r.shapes, ro, total)}</div>${r.designArea ? `<div class="print-design">設計面積 ${fmt(r.designArea, ro.digits)} m² ／ 差 ${diff}</div>` : ""}<div class="print-rounding">${roundingNote(ro)}</div>${r.memo ? `<div class="print-note"><b>メモ：</b><br>${esc(r.memo)}</div>` : ""}`;
   window.print();
 }
 function download(name, content, type) { const blob = new Blob([content], { type }), url = URL.createObjectURL(blob), a = document.createElement("a"); a.href = url; a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(url), 500); }
@@ -1229,6 +1289,12 @@ document.querySelectorAll('input[name="alignment"]').forEach(r => r.addEventList
 $("flipDirection").addEventListener("change", updatePreview);
 $("swapButton").addEventListener("click", swapAB);
 $("cancelEditButton").addEventListener("click", cancelEdit);
+// 辺の途中から（v13.9）
+$("partialToggle").addEventListener("change", () => { state.partialCTouched = false; refresh(); });
+document.querySelectorAll('input[name="partialFrom"]').forEach(r => r.addEventListener("change", () => updatePreview()));
+$("partialOffset").addEventListener("input", () => { applySharedLength(); updatePreview(); });
+$("partialOffset").addEventListener("change", () => { const v = parseLength($("partialOffset").value); if (Number.isFinite(v)) $("partialOffset").value = fmtLen(v); applySharedLength(); updatePreview(); });
+["sideC", "bottomBase"].forEach(id => $(id).addEventListener("input", () => { if (partialOn()) state.partialCTouched = true; })); // 底辺を手で直したら、残りの長さで上書きしない
 $("edgeSelect").addEventListener("change", e => { selectEdge(e.target.value); applySharedLength(); updatePreview(); });
 $("drawingCanvas").addEventListener("click", e => {
   const hit = e.target.closest("[data-edge]"); if (!hit || !selectEdge(hit.dataset.edge)) return;

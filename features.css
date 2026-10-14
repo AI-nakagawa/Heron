@@ -215,3 +215,25 @@ body.outdoor .close-add{min-height:54px;font-size:16px}
 body.measuring .update-banner{display:none} /* 全画面入力中は出さない（閉じると戻る） */
 .close-line.redo{color:#8f480b}
 @media print{.update-banner{display:none!important}}
+
+/* v13.8: PDF の表を既存のソフトの様式に（No.・a・b・c・s・面積）。1図形1行 */
+@media print{
+  #printSheet table.print-table{font-size:9pt}
+  #printSheet table.print-table th{text-align:center}
+  #printSheet table.print-table th,#printSheet table.print-table td{padding:0.8mm 2mm;line-height:1.25}
+  #printSheet td.print-num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  #printSheet td.print-area{text-align:right;white-space:nowrap;font-weight:700;font-variant-numeric:tabular-nums}
+  #printSheet td.print-no{width:9mm;text-align:center}
+  #printSheet thead{display:table-header-group} /* 2ページ目にも見出しを出す */
+  #printSheet .print-close{display:block;margin-top:1mm;font-size:8pt;color:#185c3e;font-weight:700}
+  #printSheet .print-close.warn{color:#9a4c00}
+}
+
+/* v13.9: 辺の途中から（障害物を避ける） */
+.partial-toggle{display:flex;align-items:center;gap:10px;margin:12px 0 0;padding:10px 12px;border-radius:11px;background:#edf1ea;font-weight:800}
+.partial-toggle input{width:22px;height:22px;accent-color:var(--green);flex:none}
+.partial-panel{display:grid;gap:10px;margin-top:10px;padding:12px;border:1.5px dashed #9fb7a9;border-radius:12px;background:#f7faf6}
+.partial-panel .helper{margin:0}
+.part-badge{color:#3b5f8a!important;font-weight:800}
+body.outdoor .partial-toggle input{width:28px;height:28px}
+@media print{#printSheet .print-close.part{color:#24466e}}
