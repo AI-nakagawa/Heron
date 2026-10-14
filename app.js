@@ -6,7 +6,7 @@ const CLOSE_WARN = 0.05;   // 閉じたときのずれ（閉合差）がこれ�
 const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true, measureKeyboard: "voice", projectCollapsed: false, signalAdd: true, showRaw: false, measureZoom: true };
 const $ = id => document.getElementById(id);
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, autoError: "", deferredInstall: null, viewBox: "0 0 700 430", savedSnapshot: "", zoom: { key: null, points: [] }, recordBase: null, draftFailed: false, wakeLock: null, wakeLockPending: false, signal: { needs: [], added: 0, barrier: null }, lastQuick: "", voiceLog: [], selected: new Set() };
+const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, autoError: "", deferredInstall: null, viewBox: "0 0 700 430", savedSnapshot: "", zoom: { key: null, points: [] }, recordBase: null, draftFailed: false, wakeLock: null, wakeLockPending: false, redo: [], signal: { needs: [], added: 0, barrier: null }, lastQuick: "", voiceLog: [], selected: new Set() };
 const FIELD_LABELS = { sideA: "a", sideB: "b", sideC: "c", topBase: "上底", bottomBase: "下底", height: "高さ" };
 const DIMENSION_FIELDS = Object.keys(FIELD_LABELS);
 const mobileDevice = /Android|iPad|iPhone|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 0;
@@ -874,7 +874,22 @@ function swapAB() {
 }
 function tapFlash(...els) { els.forEach(el => { if (!el) return; el.classList.remove("tap-flash"); void el.offsetWidth; el.classList.add("tap-flash"); }); }
 function undoLast() {
-  ask("最後の図形を戻しますか？", "最後に追加した図形と、その接続を削除します。", () => { state.shapes.pop(); refresh(); showToast("最後の図形を戻しました"); if (measureOpen()) focusQuick(); });
+  ask("最後の図形を戻しますか？", "最後に追加した図形と、その接続を削除します。", () => {
+    // 戻した図形は［進む］で元に戻せるよう取っておく（v14.2）。戻した後の図面も覚え、図面が変わっていたら進めない
+    const shape = state.shapes.pop();
+    state.redo.push({ shape, after: JSON.stringify(state.shapes) });
+    refresh(); showToast("最後の図形を戻しました"); if (measureOpen()) focusQuick();
+  });
+}
+// 進む（v14.2）: 戻した図形を元に戻す。戻した後に追加・修正・削除などで図面が変わっていたら、つながりが合わなくなるので進めない
+function canRedo() { const top = state.redo.at(-1); return !!top && !state.editingId && JSON.stringify(state.shapes) === top.after; }
+function redoLast() {
+  if (!canRedo()) { state.redo = []; syncMeasureTools(); return; }
+  const { shape } = state.redo.pop();
+  state.shapes.push(shape);
+  const next = freeEdges().find(e => e.shapeId === shape.id); // 追加したときと同じく、戻した図形の辺を次の接続先にする
+  if (next) state.selectedEdge = edgeKey(next);
+  refresh(); showToast(`図形 ${state.shapes.length} を元に戻しました`); if (measureOpen()) focusQuick();
 }
 
 // ---------- 図形の追加・修正 ----------
@@ -995,7 +1010,8 @@ function syncMeasureTools() {
     const from = partialFrom(); $("measureFromA").classList.toggle("on", from === "a"); $("measureFromB").classList.toggle("on", from === "b"); }
   refreshPartialUi(); // 辺を選び直したときも、起点のボタンの頂点名を合わせる（v13.9）
   const editing = editingShape(), locked = baseLocked(), edge = lockedEdge();
-  $("measureMode").textContent = state.mode === "triangle" ? "△ 三角形" : "▱ 台形";
+  $("measureMode").textContent = state.mode === "triangle" ? "△三角" : "▱台形"; // v14.2: 短くして［進む］の場所を空ける
+  $("measureRedo").disabled = !canRedo();
   $("measureMode").disabled = false;
   $("measureSwap").classList.toggle("hidden", state.mode !== "triangle");
   $("measureFlip").classList.toggle("hidden", !locked);
@@ -1343,6 +1359,7 @@ $("measureMode").addEventListener("click", () => { setMode(state.mode === "trian
 $("measureSwap").addEventListener("click", () => { swapAB(); focusQuick(); });
 $("measureFlip").addEventListener("click", () => { $("flipDirection").checked = !$("flipDirection").checked; updatePreview(); focusQuick(); });
 $("measureUndo").addEventListener("click", undoLast);
+$("measureRedo").addEventListener("click", redoLast);
 $("measureAdd").addEventListener("click", () => { addShape(); if (measureOpen() && !$("confirmDialog").open) focusQuick(); });
 $("measureNext").addEventListener("click", () => { const input = $("quickInput"); if (input.value.trim()) { input.value = input.value.trimEnd() + " "; applyQuickInput(); } focusQuick(); });
 $("measureKeyboard").addEventListener("click", () => { setMeasureKeyboard(state.settings.measureKeyboard === "numeric" ? "voice" : "numeric"); $("quickInput").blur(); focusQuick(); });

@@ -252,3 +252,4 @@ body.outdoor .measure-partial-from button{min-height:48px;font-size:16px}
 .measure-partial-from button{white-space:nowrap}
 .measure-toolbar{padding-left:6px;padding-right:6px}.measure-toolbar .m-btn{padding:0 8px}
 @media(max-width:374px){.measure-toolbar .m-btn{padding:0 6px;font-size:13px}#measureClose{min-width:38px}}
+#measureRedo{min-width:40px;font-size:18px}
