@@ -253,3 +253,12 @@ body.outdoor .measure-partial-from button{min-height:48px;font-size:16px}
 .measure-toolbar{padding-left:6px;padding-right:6px}.measure-toolbar .m-btn{padding:0 8px}
 @media(max-width:374px){.measure-toolbar .m-btn{padding:0 6px;font-size:13px}#measureClose{min-width:38px}}
 #measureRedo{min-width:40px;font-size:18px}
+
+/* v14.3: 合図（はい・OK）で確定した数は✓と緑、まだ合図待ちの数は「はい待ち」と薄い色 */
+.chip.ok{background:#e3f3ea;border-color:#5aa97f;color:#185c3e}
+.chip.wait{background:#fff;border-style:dashed;border-color:#b9c3bd;color:#7b8a83}
+.chip-mark{font-style:normal;font-size:.78em;font-weight:900;margin-left:4px}
+.chip.ok .chip-mark{color:#1f8a5b}
+.chip.wait .chip-mark{color:#a2570f}
+#quickNumbers .qn-pending{opacity:.45}
+body.outdoor .chip.wait{border-width:2px}

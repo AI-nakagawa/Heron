@@ -514,7 +514,8 @@ function updateQuickNumbers() {
   if (!active.replace(/^[\s、。,.!！?？]+/, "").trim()) { el.innerHTML = ""; return; }
   const values = quickValues();
   el.classList.toggle("guessed", values.glued || !!state.signal.hold); // つながった数を分けたときは色を変えて、確認が要ることを示す
-  el.innerHTML = values.length ? values.map(v => `<span>${fmtLen(v)}</span>`).join("") : '<span class="qn-wait">…</span>'; // 数字が無い言葉だけのときは「…」
+  const marks = state.settings.signalAdd && Number.isInteger(values.confirmedCount); // 合図待ちの数は薄くする（v14.3）
+  el.innerHTML = values.length ? values.map((v, i) => `<span class="${marks && i >= values.confirmedCount ? "qn-pending" : ""}">${fmtLen(v)}</span>`).join("") : '<span class="qn-wait">…</span>'; // 数字が無い言葉だけのときは「…」
 }
 
 // ---------- 入力フォーム ----------
@@ -635,8 +636,9 @@ function quickValues() {
   const need = quickTargets().length;
   const take = nums => { if (!nums.length) return; takeNumbers(confirmed, nums, need); glued ||= !!nums.glued; };
   for (const sig of sigs) { take(parseQuick(text.slice(start, sig.index))); start = sig.end; }
-  take(parseQuick(text.slice(start)));
-  confirmed.glued = glued;
+  const confirmedCount = confirmed.length; // ここまでは合図を聞き取って確定した数（持ち越した数も確定済み）
+  take(parseQuick(text.slice(start))); // 最後の合図より後ろの数は、まだ合図待ち
+  confirmed.glued = glued; confirmed.confirmedCount = confirmedCount;
   return confirmed;
 }
 // 使い終わったまとまりより後ろの文字（今の図形の寸法）
@@ -717,7 +719,15 @@ function logVoice(text) {
   state.voiceLog.push(`${hms} ${text}`);
   if (state.voiceLog.length > 80) state.voiceLog.shift();
 }
-function quickChips(values) { return quickTargets().map((id, i) => `<span class="chip ${values[i] === undefined ? "empty" : ""}">${FIELD_LABELS[id]} ${values[i] !== undefined ? fmtLen(values[i]) : "—"}</span>`).join(""); }
+// 寸法の欄（v14.3）: 「はい」「OK」で追加する設定のときは、合図を聞き取って確定した数に「✓」、まだ合図を待っている数に「はい待ち」を付ける
+function quickChips(values) {
+  const marks = state.settings.signalAdd && Number.isInteger(values.confirmedCount);
+  return quickTargets().map((id, i) => {
+    if (values[i] === undefined) return `<span class="chip empty">${FIELD_LABELS[id]} —</span>`;
+    const ok = marks && i < values.confirmedCount, wait = marks && !ok;
+    return `<span class="chip ${ok ? "ok" : wait ? "wait" : ""}">${FIELD_LABELS[id]} ${fmtLen(values[i])}${ok ? '<i class="chip-mark">✓</i>' : wait ? '<i class="chip-mark">はい待ち</i>' : ""}</span>`;
+  }).join("");
+}
 function applyQuickInput() {
   const text = $("quickInput").value, targets = quickTargets();
   if (!text.trim()) { // 入力欄を空にしたら寸法も消す（前の寸法のまま「追加」されないように）
