@@ -546,7 +546,9 @@ function signalGroups(text, limit = Infinity) {
   //   ・確定済みがあっても、足して必要な数に収まるなら、その区間の数をすべて確定（「3 はい 3.01 4.25 はい」）
   //   ・必要な数を超えるときは、言い直しや「さん 3」のような重複とみなし、その区間の最後の数だけを確定
   // 確定した数が必要な数（2つ・3つ）に届いた合図で、1つの図形のまとまりにする
-  let confirmed = [], glued = false, segStart = rest;
+  // 追加できなかったまとまりから持ち越した数（v13.7）は、次のまとまりの最初に入れておく
+  const carried = g => state.signal.carry?.index === g ? [...state.signal.carry.values] : [];
+  let confirmed = carried(groups.length), glued = false, segStart = rest;
   for (const sig of signals.slice(from)) {
     if (groups.length >= limit) break;
     const need = state.signal.needs[groups.length] ?? quickTargets().length;
@@ -557,7 +559,7 @@ function signalGroups(text, limit = Infinity) {
     if (confirmed.length < need) continue; // 1つ目の数字の後の合図などは、次の数字を待つ
     const values = confirmed; values.glued = glued;
     groups.push(values); rest = sig.end;
-    confirmed = []; glued = false;
+    confirmed = carried(groups.length); glued = false;
   }
   return { groups, rest };
 }
@@ -569,7 +571,9 @@ function takeNumbers(confirmed, nums, need) {
 // 最後の合図より後ろの、まだ合図が無い数も同じ決まりで足す（話している途中の寸法を見せるため）
 function quickValues() {
   const text = activeQuickText(), sigs = findSignals(text);
-  let confirmed = [], glued = false, start = 0;
+  // 追加できなかったまとまりから持ち越した数（v13.7）があれば、それに続けて足す
+  const carry = state.signal.carry?.index === state.signal.added ? state.signal.carry.values : [];
+  let confirmed = [...carry], glued = false, start = 0;
   const need = quickTargets().length;
   const take = nums => { if (!nums.length) return; takeNumbers(confirmed, nums, need); glued ||= !!nums.glued; };
   for (const sig of sigs) { take(parseQuick(text.slice(start, sig.index))); start = sig.end; }
@@ -629,7 +633,15 @@ function processSignals() {
   }
   logVoice(`合図で追加: ${values.map(fmtLen).join(" ")}`);
   if (addShape({ auto: true })) return true;
-  DIMENSION_FIELDS.forEach(id => { if (!$(id).readOnly) $(id).value = ""; }); // 追加できなかった寸法は捨てて、読み直しを待つ
+  // 三角形が成り立たないなど追加できなかったとき（v13.7、ユーザー指示）: 最後に言った数だけを捨て、前の数は次のまとまりに持ち越す。
+  // 最初の三角形は「3 3 〇」の〇、2つ目以降は「3 〇」の〇を消し、次に言った数で埋める
+  const keep = values.slice(0, targets.length - 1), dropped = values[targets.length - 1];
+  state.signal.carry = { index: k + 1, values: keep };
+  state.autoError = `${state.autoError} 最後の数（${fmtLen(dropped)}）を消しました。言い直してください`;
+  logVoice(`追加できず、最後の数を消して前の数を残す: 残す ${keep.map(fmtLen).join(" ") || "なし"} ／ 消す ${fmtLen(dropped)}`);
+  showToast(`追加できません：最後の数（${fmtLen(dropped)}）を消しました。言い直してください`);
+  DIMENSION_FIELDS.forEach(id => { if (!$(id).readOnly) $(id).value = ""; });
+  targets.forEach((id, i) => { if (i < keep.length) $(id).value = fmtLen(keep[i]); });
   return processSignals();
 }
 // 追加の直後に、話した文字がそっくりもう一度入った場合（iPhone で起きることがある）は、追加せずに読み飛ばす
@@ -741,7 +753,7 @@ function updatePreview() {
     box.textContent = "寸法を入れると、ここに面積が、図面に点線で追加位置が表示されます。";
     status.className = `measure-status ${state.autoError ? "error" : "idle"}`;
     // 合図で追加できなかったときは、次の寸法がそろうまで理由を出したままにする
-    status.textContent = state.autoError ? `追加できませんでした：${state.autoError} 読み直してください` : state.settings.signalAdd ? "寸法を話し、数がそろったら「はい」「OK」で追加します" : "寸法を話すか入力すると、図面に点線で表示されます（「はい」「OK」などの合図は無視します）";
+    status.textContent = state.autoError ? `追加できませんでした：${state.autoError}${state.autoError.endsWith("ください") ? "" : " 読み直してください"}` : state.settings.signalAdd ? "寸法を話し、数がそろったら「はい」「OK」で追加します" : "寸法を話すか入力すると、図面に点線で表示されます（「はい」「OK」などの合図は無視します）";
   } else {
     try {
       const cand = buildCandidate(); state.candidate = cand;
