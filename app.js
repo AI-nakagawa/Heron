@@ -6,7 +6,7 @@ const CLOSE_WARN = 0.05;   // 閉じたときのずれ（閉合差）がこれ�
 const DEFAULT_SETTINGS = { digits: 3, method: "round", sumMode: "total", outdoor: false, wakeLock: true, measureKeyboard: "voice", projectCollapsed: false, signalAdd: true, showRaw: false, measureZoom: true };
 const $ = id => document.getElementById(id);
 const uid = () => crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, autoError: "", deferredInstall: null, viewBox: "0 0 700 430", savedSnapshot: "", zoom: { key: null, points: [] }, recordBase: null, draftFailed: false, wakeLock: null, wakeLockPending: false, redo: [], signal: { needs: [], added: 0, barrier: null }, lastQuick: "", voiceLog: [], selected: new Set() };
+const state = { mode: "triangle", shapes: [], selectedEdge: null, recordId: null, editingId: null, candidate: null, records: loadRecords(), settings: loadSettings(), confirmAction: null, autoError: "", deferredInstall: null, viewBox: "0 0 700 430", savedSnapshot: "", zoom: { key: null, points: [] }, recordBase: null, draftFailed: false, wakeLock: null, wakeLockPending: false, redo: [], signal: { needs: [], added: 0, barrier: null }, voiceMode: false, lastQuick: "", voiceLog: [], selected: new Set() };
 const FIELD_LABELS = { sideA: "a", sideB: "b", sideC: "c", topBase: "上底", bottomBase: "下底", height: "高さ" };
 const DIMENSION_FIELDS = Object.keys(FIELD_LABELS);
 const mobileDevice = /Android|iPad|iPhone|iPod/i.test(navigator.userAgent) || navigator.maxTouchPoints > 0;
@@ -514,7 +514,7 @@ function updateQuickNumbers() {
   if (!active.replace(/^[\s、。,.!！?？]+/, "").trim()) { el.innerHTML = ""; return; }
   const values = quickValues();
   el.classList.toggle("guessed", values.glued || !!state.signal.hold); // つながった数を分けたときは色を変えて、確認が要ることを示す
-  const marks = state.settings.signalAdd && Number.isInteger(values.confirmedCount); // 合図待ちの数は薄くする（v14.3）
+  const marks = signalMarks(values); // 合図待ちの数は薄くする（v14.3）
   el.innerHTML = values.length ? values.map((v, i) => `<span class="${marks && i >= values.confirmedCount ? "qn-pending" : ""}">${fmtLen(v)}</span>`).join("") : '<span class="qn-wait">…</span>'; // 数字が無い言葉だけのときは「…」
 }
 
@@ -719,9 +719,16 @@ function logVoice(text) {
   state.voiceLog.push(`${hms} ${text}`);
   if (state.voiceLog.length > 80) state.voiceLog.shift();
 }
+// 音声入力らしい文字か（v14.4）: 合図（はい・OK）や、かな・漢字（「3点」「さん」など）が入っている。キーボードで打った数字だけなら false
+function looksSpoken(text) { return findSignals(text).length > 0 || /[぀-ヿ㐀-鿿]/.test(text); }
+// ✓・はい待ちを付けるか（v14.4）: 音声入力で話しているときだけ。キーボードで数字を打っているとき（数字キーボード、または数字だけで「追加」・改行で追加したとき）は付けない
+function signalMarks(values) {
+  if (!state.settings.signalAdd || state.settings.measureKeyboard === "numeric" || !Number.isInteger(values.confirmedCount)) return false;
+  return state.voiceMode || looksSpoken($("quickInput").value);
+}
 // 寸法の欄（v14.3）: 「はい」「OK」で追加する設定のときは、合図を聞き取って確定した数に「✓」、まだ合図を待っている数に「はい待ち」を付ける
 function quickChips(values) {
-  const marks = state.settings.signalAdd && Number.isInteger(values.confirmedCount);
+  const marks = signalMarks(values);
   return quickTargets().map((id, i) => {
     if (values[i] === undefined) return `<span class="chip empty">${FIELD_LABELS[id]} —</span>`;
     const ok = marks && i < values.confirmedCount, wait = marks && !ok;
@@ -735,6 +742,7 @@ function applyQuickInput() {
     state.zoom = { key: null, points: [] }; // 入力欄を空にしたら、広げた拡大範囲も元に戻す（大きな数を読み違えた後など）
     targets.forEach(id => { $(id).value = ""; }); updateQuickNumbers(); updatePreview(); return;
   }
+  if (looksSpoken(text)) state.voiceMode = true; // 一度話したら、この後も音声入力として✓・はい待ちを付ける（数字だけ聞き取れた後も）
   if (processSignals()) { state.lastQuick = $("quickInput").value; updateQuickNumbers(); return; }
   state.lastQuick = text;
   const values = quickValues();
@@ -907,6 +915,7 @@ function redoLast() {
 // closeChosen: 「閉じて追加」「閉じずに追加」を押したとき（閉じるかどうかは選んだので、ずれの確認画面は出さない）
 function addShape({ auto = false, closeChosen = false } = {}) {
   let cand;
+  if (!auto && !looksSpoken($("quickInput").value)) state.voiceMode = false; // 数字だけで「追加」・改行を押した＝キーボードで打っている（v14.4）
   if (!auto && $("quickInput").value.trim()) {
     // 推測で分けた数が必要な数より多いときは、どれが寸法か分からないので「追加」でも追加しない
     const values = quickValues();
