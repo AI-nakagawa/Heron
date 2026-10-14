@@ -237,3 +237,18 @@ body.measuring .update-banner{display:none} /* 全画面入力中は出さない
 .part-badge{color:#3b5f8a!important;font-weight:800}
 body.outdoor .partial-toggle input{width:28px;height:28px}
 @media print{#printSheet .print-close.part{color:#24466e}}
+
+/* v14.1: 全画面の［途中まで］［A から］［B から］、通常の画面の辺の途中までの欄を詰める */
+.measure-toolbar .m-btn{padding:0 9px}
+.measure-partial-from{display:flex;gap:6px}
+.measure-partial-from button{flex:1;min-height:38px;border:1.5px solid var(--line);border-radius:10px;background:#fff;color:var(--ink);font-weight:800;font-size:14px}
+.measure-partial-from button.on{background:var(--green);border-color:var(--green);color:#fff}
+body.outdoor .measure-partial-from button{min-height:48px;font-size:16px}
+.partial-toggle{margin-top:8px;padding:8px 10px}
+.partial-panel{margin-top:6px;padding:0;border:0;background:none;gap:0}
+.measure-toolbar{gap:4px}
+#measureUndo{min-width:40px;font-size:18px}
+.measure-partial-from{width:100%;flex:1 1 100%}
+.measure-partial-from button{white-space:nowrap}
+.measure-toolbar{padding-left:6px;padding-right:6px}.measure-toolbar .m-btn{padding:0 8px}
+@media(max-width:374px){.measure-toolbar .m-btn{padding:0 6px;font-size:13px}#measureClose{min-width:38px}}

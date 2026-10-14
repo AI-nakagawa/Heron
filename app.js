@@ -566,15 +566,19 @@ function formPart() {
   if (!Number.isFinite(length) || length <= 0) throw Error(`${state.mode === "triangle" ? "c に" : "下底に"}、起点から辺に沿って測った長さを入れてください。`);
   return { from: partialFrom(), d: 0, length };
 }
+// 起点の頂点名（「A」など）
+function partialStartName() { const e = lockedEdge(); return e ? vertexNameOf(partialFrom() === "b" ? e.b : e.a, vertexList(state.shapes)) : ""; }
 function resetPartial() {
   $("partialToggle").checked = false;
   document.querySelector('input[name="partialFrom"][value="a"]').checked = true;
 }
 function requiredFields() { return state.mode === "triangle" ? ["sideA", "sideB", "sideC"] : ["topBase", "bottomBase", "height"]; }
-function quickTargets() { const locked = baseLocked(); return state.mode === "triangle" ? (locked ? ["sideA", "sideB"] : ["sideA", "sideB", "sideC"]) : (locked ? ["topBase", "height"] : ["topBase", "bottomBase", "height"]); }
+function quickTargets() { const locked = baseLocked() && !partialOn(); return state.mode === "triangle" ? (locked ? ["sideA", "sideB"] : ["sideA", "sideB", "sideC"]) : (locked ? ["topBase", "height"] : ["topBase", "bottomBase", "height"]); }
 function updateQuickHint() {
   const targets = quickTargets().map(id => FIELD_LABELS[id]);
-  $("quickHint").textContent = `${targets.join("・")} の順に${targets.length}つ${baseLocked() ? `（${state.mode === "triangle" ? "c" : "下底"}は接続辺）` : ""}`;
+  const base = state.mode === "triangle" ? "c" : "下底";
+  const note = partialOn() ? `（${base}は${partialStartName()}から測った長さ）` : baseLocked() ? `（${base}は接続辺）` : "";
+  $("quickHint").textContent = `${targets.join("・")} の順に${targets.length}つ${note}`;
   $("quickInput").placeholder = targets.length === 2 ? "例：4.25 3.01" : "例：3.01 4.25 3";
 }
 // ---------- 合図（はい・OK）で追加 ----------
@@ -889,7 +893,7 @@ function addShape({ auto = false, closeChosen = false } = {}) {
   const clearAfterAdd = () => {
     state.autoError = "";
     if (!auto) { clearInputs(); return; }
-    state.noClose = false; state.closeRelease = null;
+    state.noClose = false; state.closeRelease = null; resetPartial();
     DIMENSION_FIELDS.forEach(id => $(id).value = "");
     $("flipDirection").checked = false;
     document.querySelector('input[name="alignment"][value="center"]').checked = true;
@@ -982,6 +986,13 @@ function renderSummary() {
 function measureOpen() { return !$("measureOverlay").hidden; }
 function focusQuick() { const input = $("quickInput"); if (document.activeElement === input) return; input.focus({ preventScroll: true }); try { input.setSelectionRange(input.value.length, input.value.length); } catch { } }
 function syncMeasureTools() {
+  // 辺の途中まで（v14.1）: 2つ目以降の図形のときだけ［途中まで］を出し、押したら［A から］［B から］を出す
+  { const on = partialOn(), e = lockedEdge(), v = vertexList(state.shapes);
+    $("measurePartial").classList.toggle("hidden", !baseLocked());
+    $("measurePartial").setAttribute("aria-pressed", String(on));
+    $("measurePartialFrom").classList.toggle("hidden", !on);
+    if (e) { $("measureFromA").textContent = `${vertexNameOf(e.a, v)} から`; $("measureFromB").textContent = `${vertexNameOf(e.b, v)} から`; }
+    const from = partialFrom(); $("measureFromA").classList.toggle("on", from === "a"); $("measureFromB").classList.toggle("on", from === "b"); }
   refreshPartialUi(); // 辺を選び直したときも、起点のボタンの頂点名を合わせる（v13.9）
   const editing = editingShape(), locked = baseLocked(), edge = lockedEdge();
   $("measureMode").textContent = state.mode === "triangle" ? "△ 三角形" : "▱ 台形";
@@ -1322,7 +1333,10 @@ $("partsList").addEventListener("click", e => {
 $("fitButton").addEventListener("click", () => renderCanvas(true));
 $("addShapeButton").addEventListener("click", addShape);
 $("undoButton").addEventListener("click", undoLast);
-$("openMeasureButton").addEventListener("click", openMeasure);
+// 「図面を見ながら入力」は図面の右上の［入力］から開く（v14.1 で追加カードのボタンは削除）
+// 全画面の［途中まで］［A から］［B から］（v14.1）。通常の画面のチェック・起点と同じものを切り替える
+$("measurePartial").addEventListener("click", () => { $("partialToggle").checked = !$("partialToggle").checked; $("partialToggle").dispatchEvent(new Event("change")); });
+document.querySelectorAll("#measurePartialFrom [data-from]").forEach(b => b.addEventListener("click", () => { const r = document.querySelector(`input[name="partialFrom"][value="${b.dataset.from}"]`); r.checked = true; r.dispatchEvent(new Event("change")); }));
 $("openMeasureTool").addEventListener("click", openMeasure);
 $("measureClose").addEventListener("click", () => closeMeasure());
 $("measureMode").addEventListener("click", () => { setMode(state.mode === "triangle" ? "trapezoid" : "triangle"); focusQuick(); });
